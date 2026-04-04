@@ -4,11 +4,9 @@ __pycache__/
 *.py[cod]
 *.pyc
 .env
-*.joblib
 *.parquet
 *.csv
 mlruns/
 ml/data/raw/
 ml/data/processed/
 ml/data/features/
-ml/models/
