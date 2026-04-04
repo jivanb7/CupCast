@@ -13,8 +13,8 @@ COPY ml/models/cupcast-club_best.joblib ml/models/cupcast-club_best.joblib
 # Expose port
 EXPOSE 8000
 
-# Set default MLflow tracking URI (can be overridden at runtime)
-ENV MLFLOW_TRACKING_URI=http://34.58.128.38:5000
+# MLflow tracking URI must be passed at runtime:
+#   docker run -e MLFLOW_TRACKING_URI=http://<IP>:5000 -p 8000:8000 cupcast-api
 
 # Start the API server
 CMD ["uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000"]

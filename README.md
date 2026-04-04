@@ -40,8 +40,8 @@ uvicorn api.main:app --host 0.0.0.0 --port 8000
 # Build the image
 docker build -t cupcast-api .
 
-# Run the container
-docker run -p 8000:8000 cupcast-api
+# Run the container (pass MLflow URI at runtime)
+docker run -e MLFLOW_TRACKING_URI=http://34.58.128.38:5000 -p 8000:8000 cupcast-api
 ```
 
 The API will be available at `http://localhost:8000`.
