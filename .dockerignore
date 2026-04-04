@@ -1,0 +1,13 @@
+.git
+.env
+__pycache__
+*.pyc
+ml/data/
+ml/src/
+ml/train_remote.py
+ml/run_pipeline.py
+ml/__init__.py
+ml/__pycache__
+*.pdf
+mlruns/
+.context/

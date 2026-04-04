@@ -4,11 +4,11 @@ __pycache__/
 *.py[cod]
 *.pyc
 .env
-ml/models/
-ml/data/raw/
-ml/data/processed/
-ml/data/features/
 *.joblib
 *.parquet
 *.csv
 mlruns/
+ml/data/raw/
+ml/data/processed/
+ml/data/features/
+ml/models/
