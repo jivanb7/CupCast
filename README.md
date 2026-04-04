@@ -21,8 +21,11 @@ Predicts football match outcomes (Home Win / Draw / Away Win) using an XGBoost m
 ## Run Locally (without Docker)
 
 ```bash
+# Install uv (https://docs.astral.sh/uv/getting-started/installation/)
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
 # Install dependencies
-pip install -r requirements.txt
+uv pip install -r requirements.txt
 
 # Set MLflow tracking URI (optional — falls back to local model file)
 export MLFLOW_TRACKING_URI=http://34.58.128.38:5000
