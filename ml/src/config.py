@@ -1,0 +1,266 @@
+"""
+ml/src/config.py
+================
+Central configuration for the ML pipeline.
+
+Contains:
+  - League codes and download URL patterns for football-data.co.uk
+  - Seasons to download per league
+  - Feature lists (club model vs international model)
+  - Default XGBoost / LightGBM hyperparameter search spaces
+  - Train/validation/test split dates
+  - Data file paths
+  - MLFlow experiment names and model registry names
+  - Value-pick edge threshold
+
+All builder agents that need to reference feature names, league codes, or
+model names should import from this file rather than hardcoding strings.
+"""
+
+from pathlib import Path
+
+# ---------------------------------------------------------------------------
+# Paths
+# ---------------------------------------------------------------------------
+# Resolved relative to the ml/ directory
+ML_DIR = Path(__file__).resolve().parent.parent
+DATA_DIR = ML_DIR / "data"
+RAW_DIR = DATA_DIR / "raw"
+PROCESSED_DIR = DATA_DIR / "processed"
+FEATURES_DIR = DATA_DIR / "features"
+MODELS_DIR = ML_DIR / "models"
+
+# Ensure dirs exist at import time (no-op if already present)
+for _d in [RAW_DIR, PROCESSED_DIR, FEATURES_DIR, MODELS_DIR]:
+    _d.mkdir(parents=True, exist_ok=True)
+
+# ---------------------------------------------------------------------------
+# Football-Data.co.uk Download Config
+# ---------------------------------------------------------------------------
+FOOTBALL_DATA_UK_BASE = "https://www.football-data.co.uk/mmz4281"
+FIXTURES_URL = "https://www.football-data.co.uk/fixtures.csv"
+
+# League codes → (raw subdirectory name, human-readable name)
+CLUB_LEAGUES = {
+    "E0": ("epl", "English Premier League"),
+    "E1": ("championship", "English Championship"),
+    "SP1": ("laliga", "La Liga"),
+    "I1": ("seriea", "Serie A"),
+    "D1": ("bundesliga", "Bundesliga"),
+    "F1": ("ligue1", "Ligue 1"),
+    "E2": ("league_one", "English League One"),
+    "E3": ("league_two", "English League Two"),
+    "EC": ("national_league", "English National League"),
+}
+
+# Seasons to download per league.
+# EPL: full history back to 2005/06 for maximum training data.
+# Other EU leagues: 2010/11 onwards (good balance of data vs processing time).
+# Season code format: "2526" = 2025/26
+EPL_SEASONS = [str(y)[2:] + str(y + 1)[2:] for y in range(2005, 2026)]  # 0506..2526
+EU_LEAGUE_SEASONS = [str(y)[2:] + str(y + 1)[2:] for y in range(2010, 2026)]  # 1011..2526
+
+LEAGUE_SEASONS = {
+    "E0": EPL_SEASONS,
+    "E1": EU_LEAGUE_SEASONS,
+    "SP1": EU_LEAGUE_SEASONS,
+    "I1": EU_LEAGUE_SEASONS,
+    "D1": EU_LEAGUE_SEASONS,
+    "F1": EU_LEAGUE_SEASONS,
+    "E2": EU_LEAGUE_SEASONS,
+    "E3": EU_LEAGUE_SEASONS,
+    "EC": EU_LEAGUE_SEASONS,
+}
+
+# ---------------------------------------------------------------------------
+# MLFlow Config
+# ---------------------------------------------------------------------------
+MLFLOW_EXPERIMENT_CLUB = "cupcast-club"
+MLFLOW_EXPERIMENT_INTL = "cupcast-international"
+MLFLOW_MODEL_NAME_CLUB = "cupcast-club-model"
+MLFLOW_MODEL_NAME_INTL = "cupcast-international-model"
+
+# ---------------------------------------------------------------------------
+# Train / Validation / Test Split Dates
+# ---------------------------------------------------------------------------
+CLUB_TRAIN_END = "2022-06-01"       # Inclusive upper bound for training
+CLUB_VAL_END = "2023-06-01"         # Inclusive upper bound for validation
+CLUB_TEST_END = "2024-06-01"        # Inclusive upper bound for test set
+# Data after CLUB_TEST_END is the live hold-out (2024/25 + 2025/26 current season)
+
+INTL_TRAIN_END = "2020-01-01"
+INTL_VAL_END = "2022-01-01"
+INTL_TEST_END = "2024-01-01"
+
+# ---------------------------------------------------------------------------
+# Target Encoding
+# ---------------------------------------------------------------------------
+RESULT_TO_INT = {"H": 0, "D": 1, "A": 2}
+INT_TO_RESULT = {0: "H", 1: "D", 2: "A"}
+RESULT_LABELS = ["H", "D", "A"]
+
+# ---------------------------------------------------------------------------
+# Club Model Feature List
+# ---------------------------------------------------------------------------
+# These are the columns expected in the features DataFrame for the club model.
+# Feature engineering must produce exactly these columns (no extras, no missing).
+CLUB_FEATURES = [
+    # Home team rolling form (5-match window)
+    "home_win_rate_5", "home_draw_rate_5", "home_loss_rate_5",
+    "home_goals_scored_avg_5", "home_goals_conceded_avg_5",
+    "home_goal_diff_avg_5", "home_points_per_game_5",
+    # Home team rolling form (10-match window)
+    "home_win_rate_10", "home_draw_rate_10", "home_loss_rate_10",
+    "home_goals_scored_avg_10", "home_goals_conceded_avg_10",
+    "home_goal_diff_avg_10", "home_points_per_game_10",
+    "home_clean_sheets_pct_10", "home_failed_to_score_pct_10",
+    # Home team home-specific form (5-match)
+    "home_home_win_rate_5", "home_home_goals_scored_avg_5", "home_home_goals_conceded_avg_5",
+    # Home team shot stats (5-match)
+    "home_shots_avg_5", "home_shots_on_target_avg_5", "home_shot_accuracy_5",
+    "home_corners_avg_5", "home_yellow_cards_avg_5",
+    # Away team rolling form (5-match)
+    "away_win_rate_5", "away_draw_rate_5", "away_loss_rate_5",
+    "away_goals_scored_avg_5", "away_goals_conceded_avg_5",
+    "away_goal_diff_avg_5", "away_points_per_game_5",
+    # Away team rolling form (10-match)
+    "away_win_rate_10", "away_draw_rate_10", "away_loss_rate_10",
+    "away_goals_scored_avg_10", "away_goals_conceded_avg_10",
+    "away_goal_diff_avg_10", "away_points_per_game_10",
+    "away_clean_sheets_pct_10", "away_failed_to_score_pct_10",
+    # Away team away-specific form (5-match)
+    "away_away_win_rate_5", "away_away_goals_scored_avg_5", "away_away_goals_conceded_avg_5",
+    # Away team shot stats (5-match)
+    "away_shots_avg_5", "away_shots_on_target_avg_5", "away_shot_accuracy_5",
+    "away_corners_avg_5", "away_yellow_cards_avg_5",
+    # Head-to-head (last 5 meetings)
+    "h2h_home_wins", "h2h_draws", "h2h_away_wins",
+    "h2h_home_goals_avg", "h2h_away_goals_avg",
+    # Context
+    "days_since_last_match_home", "days_since_last_match_away", "rest_advantage",
+    "season_stage", "is_derby", "is_covid_era", "is_new_team_home", "is_new_team_away",
+    # Derived interaction features
+    "form_diff_goals_scored", "form_diff_goals_conceded", "form_diff_points",
+    "attack_vs_defense", "defense_vs_attack",
+    # Bookmaker odds (market signal — strongest single predictor)
+    "odds_home", "odds_draw", "odds_away",
+    "implied_prob_home", "implied_prob_draw", "implied_prob_away",
+]
+
+# ---------------------------------------------------------------------------
+# International Model Feature List
+# ---------------------------------------------------------------------------
+INTL_FEATURES = [
+    # Home team recent form (5-match international only)
+    "home_win_rate_5", "home_draw_rate_5", "home_loss_rate_5",
+    "home_goals_scored_avg_5", "home_goals_conceded_avg_5",
+    "home_goal_diff_avg_5", "home_points_per_game_5",
+    # Away team recent form (5-match international only)
+    "away_win_rate_5", "away_draw_rate_5", "away_loss_rate_5",
+    "away_goals_scored_avg_5", "away_goals_conceded_avg_5",
+    "away_goal_diff_avg_5", "away_points_per_game_5",
+    # FIFA Rankings
+    "fifa_rank_home", "fifa_rank_away", "rank_difference", "rank_points_diff",
+    "ranking_is_stale",
+    # Tournament context
+    "is_neutral_venue", "tournament_type",
+    "confederation_home", "confederation_away", "same_confederation",
+    "world_cup_appearances_home", "world_cup_appearances_away",
+    # Head-to-head (last 5 meetings, international only)
+    "h2h_home_wins", "h2h_draws", "h2h_away_wins",
+    "h2h_home_goals_avg", "h2h_away_goals_avg",
+    # Context
+    "days_since_last_match_home", "days_since_last_match_away", "rest_advantage",
+    # Derived
+    "form_diff_goals_scored", "form_diff_goals_conceded", "form_diff_points",
+]
+
+# ---------------------------------------------------------------------------
+# Value Pick Config
+# ---------------------------------------------------------------------------
+VALUE_PICK_EDGE_THRESHOLD = 0.08  # Model prob minus bookmaker implied prob > 8% = value pick
+
+# ---------------------------------------------------------------------------
+# COVID Era Flag
+# ---------------------------------------------------------------------------
+COVID_ERA_START = "2020-03-01"
+COVID_ERA_END = "2021-07-31"
+
+# ---------------------------------------------------------------------------
+# XGBoost Default Hyperparameter Search Space (for Optuna)
+# ---------------------------------------------------------------------------
+XGBOOST_SEARCH_SPACE = {
+    "max_depth": {"type": "int", "low": 3, "high": 10},
+    "learning_rate": {"type": "float", "low": 0.01, "high": 0.3, "log": True},
+    "n_estimators": {"type": "int", "low": 100, "high": 1000},
+    "subsample": {"type": "float", "low": 0.6, "high": 1.0},
+    "colsample_bytree": {"type": "float", "low": 0.6, "high": 1.0},
+    "min_child_weight": {"type": "int", "low": 1, "high": 10},
+    "gamma": {"type": "float", "low": 0, "high": 5},
+    "reg_alpha": {"type": "float", "low": 1e-8, "high": 10.0, "log": True},
+    "reg_lambda": {"type": "float", "low": 1e-8, "high": 10.0, "log": True},
+}
+OPTUNA_N_TRIALS = 50
+
+# ---------------------------------------------------------------------------
+# World Cup 2026 Groups
+# ---------------------------------------------------------------------------
+WORLD_CUP_2026_GROUPS = {
+    "A": ["Mexico", "South Africa", "South Korea", "Czech Republic"],
+    "B": ["Canada", "Bosnia and Herzegovina", "Qatar", "Switzerland"],
+    "C": ["Brazil", "Morocco", "Haiti", "Scotland"],
+    "D": ["United States", "Paraguay", "Australia", "Turkey"],
+    "E": ["Germany", "Curaçao", "Côte d'Ivoire", "Ecuador"],
+    "F": ["Netherlands", "Japan", "Sweden", "Tunisia"],
+    "G": ["Belgium", "Egypt", "Iran", "New Zealand"],
+    "H": ["Spain", "Cape Verde Islands", "Saudi Arabia", "Uruguay"],
+    "I": ["France", "Senegal", "Iraq", "Norway"],
+    "J": ["Argentina", "Algeria", "Austria", "Jordan"],
+    "K": ["Portugal", "Democratic Republic of Congo", "Uzbekistan", "Colombia"],
+    "L": ["England", "Croatia", "Ghana", "Panama"],
+}
+
+
+def compute_rolling_splits(
+    model_type: str = "club",
+    current_date: str | None = None,
+) -> tuple[str, str, str]:
+    """
+    Compute rolling train/val/test split dates based on current date.
+
+    Strategy: Use the most recent completed season boundary (June 1) to anchor splits.
+    - train_end: 2 seasons before current season start
+    - val_end: 1 season before current season start
+    - test_end: current season end (or next June 1)
+
+    This means each weekly retrain incorporates all completed matches into training,
+    while keeping the most recent full season as validation and current season as test.
+
+    Example (current_date = 2026-04-02):
+      Current season = 2025-26, started Aug 2025
+      train_end = 2024-06-01 (everything before 2024-25 season)
+      val_end = 2025-06-01 (2024-25 season = validation)
+      test_end = 2026-06-01 (2025-26 season = test / live evaluation)
+
+    Returns: (train_end, val_end, test_end) as date strings "YYYY-MM-DD"
+    """
+    from datetime import date, datetime
+
+    if current_date:
+        today = datetime.strptime(current_date, "%Y-%m-%d").date()
+    else:
+        today = date.today()
+
+    # Determine current season's June boundary
+    # If we're before June, the current season started last year
+    # If we're after June, the current season started this year
+    if today.month <= 6:
+        current_season_end_year = today.year
+    else:
+        current_season_end_year = today.year + 1
+
+    test_end = f"{current_season_end_year}-06-01"
+    val_end = f"{current_season_end_year - 1}-06-01"
+    train_end = f"{current_season_end_year - 2}-06-01"
+
+    return train_end, val_end, test_end
