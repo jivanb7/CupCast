@@ -1,15 +1,54 @@
-*.db
-.DS_Store
+# Python
 __pycache__/
 *.py[cod]
 *.pyc
+*.egg-info/
+*.egg
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Node / Frontend
+node_modules/
+dist/
+.vite/
+
+# Environment & Secrets
 .env
+.env.local
+.env.production
+*.pem
+*.key
+credentials.json
+service-account*.json
+
+# Data & Models
 *.parquet
 *.csv
+*.pkl
+*.h5
 mlruns/
 ml/data/raw/
 ml/data/processed/
 ml/data/features/
 
+# Databases
+*.db
+*.db-journal
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs
+*.log
+
+# Team work folders
 rodrigo/
 noam/
