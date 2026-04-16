@@ -1,0 +1,115 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html {
+    background-color: #020617;
+    color: #F8FAFC;
+    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    font-variant-numeric: tabular-nums;
+  }
+
+  body {
+    margin: 0;
+    padding: 0;
+    min-height: 100vh;
+  }
+
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  ::-webkit-scrollbar-track {
+    background: #0F172A;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: #334155;
+    border-radius: 3px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: #475569;
+  }
+
+  /* Focus ring for accessibility */
+  *:focus-visible {
+    outline: 2px solid #F59E0B;
+    outline-offset: 2px;
+    border-radius: 4px;
+  }
+}
+
+@layer components {
+  /* Base card */
+  .cc-card {
+    @apply bg-card border border-border rounded-card;
+    transition: border-color 200ms ease, box-shadow 200ms ease, transform 300ms ease;
+  }
+  .cc-card:hover {
+    @apply border-border;
+  }
+
+  /* Interactive card with hover lift */
+  .cc-card-interactive {
+    @apply cc-card cursor-pointer;
+  }
+  .cc-card-interactive:hover {
+    border-color: rgba(245, 158, 11, 0.2);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(245, 158, 11, 0.06);
+    transform: scale(1.01);
+  }
+
+  /* Featured card with gold glow */
+  .cc-card-featured {
+    @apply cc-card;
+    border-color: rgba(245, 158, 11, 0.25);
+    box-shadow: 0 0 30px rgba(245, 158, 11, 0.1);
+    animation: pulse-gold 3s ease-in-out infinite;
+  }
+
+  /* KPI stat card with gradient top border */
+  .cc-stat-card {
+    @apply bg-card rounded-card p-6 relative overflow-hidden;
+    border: 1px solid #334155;
+  }
+  .cc-stat-card::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 2px;
+    background: linear-gradient(90deg, #F59E0B, #3B82F6);
+  }
+
+  /* Glass surface */
+  .cc-glass {
+    background: rgba(15, 23, 42, 0.8);
+    backdrop-filter: blur(24px);
+    -webkit-backdrop-filter: blur(24px);
+  }
+
+  /* Label text utility */
+  .cc-label {
+    @apply text-label uppercase text-foreground-muted tracking-widest;
+  }
+
+  /* Pill tab */
+  .cc-pill {
+    @apply px-4 py-2 text-sm font-medium rounded-full transition-colors duration-200 cursor-pointer;
+  }
+  .cc-pill-active {
+    @apply bg-accent-gold text-deep;
+  }
+  .cc-pill-inactive {
+    @apply bg-elevated text-foreground-muted hover:text-foreground;
+  }
+}
+
+@layer utilities {
+  .text-tabular {
+    font-variant-numeric: tabular-nums;
+  }
+}
