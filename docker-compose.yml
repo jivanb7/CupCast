@@ -1,0 +1,111 @@
+# CupCast — Local Development Docker Compose
+# Runs 4 services: PostgreSQL, MLFlow, FastAPI backend, React frontend
+#
+# Usage:
+#   docker compose up --build        # Start all services
+#   docker compose up db mlflow      # Start only database + MLFlow
+#   docker compose logs -f backend   # Tail backend logs
+#
+# Port map:
+#   5432 → PostgreSQL
+#   5000 → MLFlow UI
+#   8000 → FastAPI backend
+#   3000 → React frontend
+#
+# Required environment variables (copy .env.example → .env and fill in):
+#   DB_PASSWORD                  — PostgreSQL password
+#   ADMIN_API_KEY                — protects POST /api/v1/admin/* endpoints
+# Optional (features degrade gracefully without them):
+#   FOOTBALL_DATA_ORG_API_KEY    — live scores via Football-Data.org free tier
+#   API_FOOTBALL_KEY             — live scores via api-sports.io (lower leagues + MLS)
+#   ENABLE_SCHEDULER             — set to "true" to activate background refresh jobs
+#   KAGGLE_USERNAME / KAGGLE_KEY — required only if re-running data ingestion
+
+version: '3.8'
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: cupcast
+      POSTGRES_USER: cupcast
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cupcast"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  mlflow:
+    build: ./mlflow
+    ports:
+      - "5000:5000"
+    environment:
+      MLFLOW_BACKEND_STORE_URI: postgresql://cupcast:${DB_PASSWORD}@db:5432/cupcast
+      MLFLOW_DEFAULT_ARTIFACT_ROOT: /mlflow/artifacts
+    volumes:
+      - mlflow_artifacts:/mlflow/artifacts
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  backend:
+    build:
+      # Context is cupcast/ root so the Dockerfile can access both backend/ and ml/
+      context: .
+      dockerfile: backend/Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: postgresql://cupcast:${DB_PASSWORD}@db:5432/cupcast
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+      MODEL_LOAD_MODE: registry
+      ADMIN_API_KEY: ${ADMIN_API_KEY}
+      # Live score API keys — leave blank to disable polling
+      FOOTBALL_DATA_ORG_API_KEY: ${FOOTBALL_DATA_ORG_API_KEY:-}
+      API_FOOTBALL_KEY: ${API_FOOTBALL_KEY:-}
+      # Set to "true" to enable background score/fixture/prediction refresh jobs
+      ENABLE_SCHEDULER: ${ENABLE_SCHEDULER:-false}
+    volumes:
+      # Model artifacts are stored inside the container at /app/ml/models/
+      # Mount this volume so trained models survive container restarts
+      # and can be written by the ML training pipeline running in the same volume.
+      - ml_models:/app/ml/models
+      - ml_processed:/app/ml/data/processed
+    depends_on:
+      db:
+        condition: service_healthy
+      mlflow:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  frontend:
+    build: ./frontend
+    ports:
+      - "3000:3000"
+    environment:
+      VITE_API_URL: http://localhost:8000
+    depends_on:
+      backend:
+        condition: service_healthy
+
+volumes:
+  pgdata:
+  mlflow_artifacts:
+  ml_models:
+  ml_processed:
