@@ -23,8 +23,6 @@ from models.model_registry import ModelRegistry
 from models.prediction import Prediction
 from schemas.prediction import ModelPerformanceResponse
 
-from sqlalchemy import or_
-
 router = APIRouter(prefix="/model", tags=["model"])
 
 
