@@ -101,26 +101,6 @@ export const getLeagues = async () => {
   return response.data
 }
 
-/**
- * Fetch current standings for a league.
- * Returns: { league_code, league_name, season, standings: StandingsEntry[] }
- */
-export const getStandings = async (leagueCode) => {
-  const response = await client.get(`/leagues/${leagueCode}/standings`)
-  return response.data
-}
-
-// ---- Teams ----
-
-/**
- * Fetch form stats for a team.
- * Returns: TeamFormResponse
- */
-export const getTeamForm = async (teamId) => {
-  const response = await client.get(`/teams/${teamId}/form`)
-  return response.data
-}
-
 // ---- World Cup ----
 
 /**

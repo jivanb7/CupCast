@@ -145,6 +145,9 @@ CLUB_FEATURES = [
     # Bookmaker odds (market signal — strongest single predictor)
     "odds_home", "odds_draw", "odds_away",
     "implied_prob_home", "implied_prob_draw", "implied_prob_away",
+    # Team-level injury snapshot (from backend DB via scripts/export_injuries.py)
+    "home_active_injuries", "away_active_injuries",
+    "home_key_injuries", "away_key_injuries",
 ]
 
 # ---------------------------------------------------------------------------
@@ -173,6 +176,9 @@ INTL_FEATURES = [
     "days_since_last_match_home", "days_since_last_match_away", "rest_advantage",
     # Derived
     "form_diff_goals_scored", "form_diff_goals_conceded", "form_diff_points",
+    # Team-level injury snapshot
+    "home_active_injuries", "away_active_injuries",
+    "home_key_injuries", "away_key_injuries",
 ]
 
 # ---------------------------------------------------------------------------
@@ -200,8 +206,6 @@ XGBOOST_SEARCH_SPACE = {
     "reg_alpha": {"type": "float", "low": 1e-8, "high": 10.0, "log": True},
     "reg_lambda": {"type": "float", "low": 1e-8, "high": 10.0, "log": True},
 }
-OPTUNA_N_TRIALS = 50
-
 # ---------------------------------------------------------------------------
 # World Cup 2026 Groups
 # ---------------------------------------------------------------------------
@@ -220,47 +224,3 @@ WORLD_CUP_2026_GROUPS = {
     "L": ["England", "Croatia", "Ghana", "Panama"],
 }
 
-
-def compute_rolling_splits(
-    model_type: str = "club",
-    current_date: str | None = None,
-) -> tuple[str, str, str]:
-    """
-    Compute rolling train/val/test split dates based on current date.
-
-    Strategy: Use the most recent completed season boundary (June 1) to anchor splits.
-    - train_end: 2 seasons before current season start
-    - val_end: 1 season before current season start
-    - test_end: current season end (or next June 1)
-
-    This means each weekly retrain incorporates all completed matches into training,
-    while keeping the most recent full season as validation and current season as test.
-
-    Example (current_date = 2026-04-02):
-      Current season = 2025-26, started Aug 2025
-      train_end = 2024-06-01 (everything before 2024-25 season)
-      val_end = 2025-06-01 (2024-25 season = validation)
-      test_end = 2026-06-01 (2025-26 season = test / live evaluation)
-
-    Returns: (train_end, val_end, test_end) as date strings "YYYY-MM-DD"
-    """
-    from datetime import date, datetime
-
-    if current_date:
-        today = datetime.strptime(current_date, "%Y-%m-%d").date()
-    else:
-        today = date.today()
-
-    # Determine current season's June boundary
-    # If we're before June, the current season started last year
-    # If we're after June, the current season started this year
-    if today.month <= 6:
-        current_season_end_year = today.year
-    else:
-        current_season_end_year = today.year + 1
-
-    test_end = f"{current_season_end_year}-06-01"
-    val_end = f"{current_season_end_year - 1}-06-01"
-    train_end = f"{current_season_end_year - 2}-06-01"
-
-    return train_end, val_end, test_end
