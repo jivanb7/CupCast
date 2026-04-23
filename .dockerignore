@@ -2,12 +2,16 @@
 .env
 __pycache__
 *.pyc
-ml/data/
-ml/src/
+*.pdf
+.context/
+mlruns/
+
+# Training-only scripts — not needed by the backend runtime.
 ml/train_remote.py
 ml/run_pipeline.py
-ml/__init__.py
 ml/__pycache__
-*.pdf
-mlruns/
-.context/
+
+# Large data subfolders. The backend only needs processed/ at runtime;
+# raw/ and features/ are training inputs and stay on the training host.
+ml/data/raw/
+ml/data/features/
