@@ -45,7 +45,10 @@ COPY ml/ ./ml/
 ENV PATH=/root/.local/bin:$PATH
 ENV PYTHONPATH=/app
 
+# Cloud Run injects PORT=8080 at runtime. Default to 8000 for local/docker-compose.
+ENV PORT=8000
 EXPOSE 8000
 
-# Use exec form so signals (SIGTERM) reach uvicorn directly, not a shell
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Shell form so $PORT expands at container start; exec replaces the shell with
+# uvicorn as PID 1 so SIGTERM reaches it directly (clean shutdown on Cloud Run).
+CMD exec uvicorn main:app --host 0.0.0.0 --port ${PORT}
