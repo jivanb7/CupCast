@@ -336,15 +336,33 @@ def seed_from_fixtures_csv(db: Session) -> dict:
 
 
 def seed_all_fixtures(db: Session) -> dict:
-    """Run all fixture seeders. Called by scheduler and admin endpoint."""
+    """Run all fixture seeders. Called by scheduler and admin endpoint.
+
+    Sources run in order so the cheapest/most-authoritative seed first and
+    ESPN fills remaining gaps. Each is independent — a failure in one does
+    not block the others.
+    """
+    from services.espn_fixture_service import seed_from_espn
+
     logger.info("Starting fixture seeding...")
     fdorg = seed_from_football_data_org(db)
     csv = seed_from_fixtures_csv(db)
+    espn = seed_from_espn(db)
     combined = {
         "fdorg_seeded": fdorg.get("seeded", 0),
         "csv_seeded": csv.get("seeded", 0),
-        "already_exists": fdorg.get("already_exists", 0) + csv.get("already_exists", 0),
-        "skipped": fdorg.get("skipped", 0) + csv.get("skipped", 0),
+        "espn_seeded": espn.get("seeded", 0),
+        "espn_unresolved": espn.get("unresolved", 0),
+        "already_exists": (
+            fdorg.get("already_exists", 0)
+            + csv.get("already_exists", 0)
+            + espn.get("already_exists", 0)
+        ),
+        "skipped": (
+            fdorg.get("skipped", 0)
+            + csv.get("skipped", 0)
+            + espn.get("skipped", 0)
+        ),
     }
     logger.info("All fixture seeding complete: %s", combined)
     return combined

@@ -26,7 +26,7 @@ class League(Base):
 
     # TODO (database-engineer): implement all columns per schema spec
     id = Column(Integer, primary_key=True)
-    code = Column(String(10), unique=True, nullable=False)
+    code = Column(String(20), unique=True, nullable=False)
     name = Column(String(100), nullable=False)
     country = Column(String(50))
     season_format = Column(String(20))  # 'split_year' or 'calendar_year'
