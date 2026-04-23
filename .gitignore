@@ -27,10 +27,13 @@ service-account*.json
 *.csv
 *.pkl
 *.h5
+*.joblib
 mlruns/
 ml/data/raw/
 ml/data/processed/
 ml/data/features/
+# Trained model artifacts — models live in MLflow/GCS, not git
+ml/models/
 
 # Databases
 *.db
