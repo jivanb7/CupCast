@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useParams, Link } from 'react-router-dom'
-import { ArrowLeft, Shield, Clock, BarChart3 } from 'lucide-react'
+import { ArrowLeft, Shield, Clock, BarChart3, TrendingUp } from 'lucide-react'
 import { getMatch } from '../services/api'
 import ProbabilityBar from '../components/match/ProbabilityBar'
 import TeamForm from '../components/team/TeamForm'
@@ -224,6 +224,117 @@ export default function MatchDetail() {
               <p className="text-sm text-foreground-muted leading-relaxed">
                 {pred.explanation_text}
               </p>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Bookmaker Odds + Model Edge */}
+      {pred && (
+        <div className="cc-card p-6 sm:p-8 mb-6">
+          <div className="flex items-center gap-2 mb-2">
+            <TrendingUp className="w-5 h-5 text-accent-gold" />
+            <h2 className="text-lg font-semibold text-foreground">Bookmaker Odds</h2>
+          </div>
+          <p className="text-xs text-foreground-muted mb-5 leading-relaxed">
+            Decimal odds from Bet365 via API-Football.{' '}
+            <span className="text-foreground">Implied probability</span> is what the market thinks (1 ÷ odds).{' '}
+            <span className="text-foreground">Edge</span> is our model's probability minus the market's — positive edge means we see a value bet.
+          </p>
+
+          {pred.odds_home != null && pred.odds_draw != null && pred.odds_away != null ? (
+            <div className="grid grid-cols-3 gap-3">
+              {[
+                {
+                  key: 'H',
+                  label: match.home_team_name,
+                  sub: 'Home',
+                  odds: pred.odds_home,
+                  prob: pred.prob_home_win,
+                  edge: pred.edge_home,
+                  color: 'green',
+                },
+                {
+                  key: 'D',
+                  label: 'Draw',
+                  sub: 'Tie',
+                  odds: pred.odds_draw,
+                  prob: pred.prob_draw,
+                  edge: pred.edge_draw,
+                  color: 'amber',
+                },
+                {
+                  key: 'A',
+                  label: match.away_team_name,
+                  sub: 'Away',
+                  odds: pred.odds_away,
+                  prob: pred.prob_away_win,
+                  edge: pred.edge_away,
+                  color: 'red',
+                },
+              ].map((c) => {
+                const implied = 1 / c.odds
+                const modelProb = c.prob ?? 0
+                const edgeVal = c.edge != null ? c.edge : modelProb - implied
+                const edgePositive = edgeVal > 0
+                const isPick = pred.predicted_result === c.key
+                const accent =
+                  c.color === 'green' ? 'text-accent-green border-accent-green/30'
+                  : c.color === 'amber' ? 'text-accent-amber border-accent-amber/30'
+                  : 'text-accent-red border-accent-red/30'
+
+                return (
+                  <div
+                    key={c.key}
+                    className={`p-4 rounded-card bg-deep border transition-all ${
+                      isPick ? accent : 'border-border/50'
+                    }`}
+                  >
+                    <p className="cc-label text-[10px] mb-1">{c.sub}</p>
+                    <p className="text-sm font-semibold text-foreground truncate" title={c.label}>
+                      {c.label}
+                    </p>
+                    <p className="mt-3 text-2xl font-bold text-foreground text-tabular">
+                      {c.odds.toFixed(2)}
+                    </p>
+                    <p className="text-[11px] text-foreground-muted mt-1">
+                      Market: <span className="text-foreground text-tabular">{Math.round(implied * 100)}%</span>
+                    </p>
+                    <p className="text-[11px] text-foreground-muted">
+                      Model: <span className="text-foreground text-tabular">{Math.round(modelProb * 100)}%</span>
+                    </p>
+                    <p className={`text-[11px] mt-2 font-semibold text-tabular ${
+                      edgePositive ? 'text-accent-green' : 'text-foreground-muted'
+                    }`}>
+                      Edge: {edgePositive ? '+' : ''}{(edgeVal * 100).toFixed(1)}%
+                    </p>
+                  </div>
+                )
+              })}
+            </div>
+          ) : (
+            <div className="p-5 rounded-card bg-deep border border-border/50 text-center">
+              <p className="text-sm text-foreground-muted">
+                Bookmaker odds not yet published for this fixture.
+              </p>
+              <p className="text-xs text-foreground-muted/70 mt-1">
+                Sportsbooks typically price lines within ~14 days of kickoff.
+              </p>
+            </div>
+          )}
+
+          {pred.is_value_pick && (
+            <div className="mt-5 p-3 rounded-card bg-accent-gold/10 border border-accent-gold/20 flex items-center gap-2">
+              <ValuePickBadge direction={pred.value_pick_direction} />
+              <span className="text-xs text-foreground-muted">
+                Our model sees positive expected value on the{' '}
+                <span className="text-foreground font-semibold">
+                  {pred.value_pick_direction === 'H' ? `${match.home_team_name} (Home)`
+                    : pred.value_pick_direction === 'A' ? `${match.away_team_name} (Away)`
+                    : 'Draw'}
+                </span>{' '}
+                side.
+              </span>
             </div>
           )}
         </div>

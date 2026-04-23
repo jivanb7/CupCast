@@ -168,14 +168,8 @@ export default function MatchCard({ match }) {
           />
         )}
 
-        {/* Bookmaker odds row — only shown when odds have been stamped by odds_service */}
-        {pred && pred.odds_home != null && pred.odds_draw != null && pred.odds_away != null && (
-          <div className="flex items-center justify-between mt-2 px-2 py-1 rounded-md bg-white/[0.02] text-[10px] text-foreground-muted text-tabular">
-            <span>H <span className="text-foreground">{pred.odds_home.toFixed(2)}</span></span>
-            <span>D <span className="text-foreground">{pred.odds_draw.toFixed(2)}</span></span>
-            <span>A <span className="text-foreground">{pred.odds_away.toFixed(2)}</span></span>
-          </div>
-        )}
+        {/* Bookmaker odds intentionally omitted on the card.
+            Shown on the match detail page instead — see MatchDetail.jsx. */}
 
         {/* Completed match without prediction */}
         {isCompleted && !pred && match.result && (
