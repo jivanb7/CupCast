@@ -35,9 +35,17 @@ class Settings(BaseSettings):
     # In production, set DATABASE_URL to a Postgres connection string.
     database_url: str = _DEFAULT_DB_URL
 
-    # MLFlow / Model loading
+    # MLFlow tracking server — used for model registration/training runs only.
+    # Backend inference does NOT need this (models load directly from GCS).
     mlflow_tracking_uri: str = "http://localhost:5000"
-    model_load_mode: str = "registry"  # 'registry' or 'gcs'
+
+    # Model loading — canonical path is GCS via mlflow.*.load_model(gs://...).
+    # These are populated from MLflow registry at deploy time (see ml/register_models.py
+    # output). The server is firewalled to a single admin IP, so Cloud Run cannot
+    # hit the registry at runtime — we resolve the gs:// URIs up front instead.
+    gcs_model_uri_club: str = ""
+    gcs_model_uri_club_top5: str = ""
+    gcs_model_uri_intl: str = ""
 
     # GCP (optional — only required in production)
     gcp_project_id: str = ""
@@ -59,6 +67,10 @@ class Settings(BaseSettings):
     db_pool_size: int = 5
     db_max_overflow: int = 10
     db_pool_pre_ping: bool = True
+
+    # Background refresh scheduler (APScheduler). "true" to enable locally.
+    # In GCP production, keep false and use Cloud Scheduler to hit /admin/*.
+    enable_scheduler: bool = False
 
     @property
     def is_production(self) -> bool:

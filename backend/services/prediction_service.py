@@ -11,21 +11,32 @@ Responsibilities:
 
 Model loading:
   Models are cached as module-level singletons after first load.
-  Loaded from ml/models/{model_name}_best.joblib using joblib.
+  Downloaded from GCS on first access using mlflow.sklearn.load_model /
+  mlflow.xgboost.load_model. The gs:// URIs come from backend config
+  (populated from MLflow registry at deploy time).
+
+  This avoids any runtime dependency on the MLflow tracking server —
+  the server is firewalled to admin-only access, so Cloud Run cannot
+  reach it. Promoting a new model version = re-registering, updating
+  the GCS URI env var, and redeploying.
 
 Integration with ML module:
-  Uses joblib directly to load the trained XGBClassifier artifacts.
-  Does NOT import from ml.src.predict to avoid cross-module path issues.
-  The feature engineering is handled by importing the ml module directly.
+  Feature engineering still lives in ml.src and is imported directly.
 """
 
 import logging
 import sys
+import threading
 from datetime import date
 from pathlib import Path
 from typing import Optional
 
 logger = logging.getLogger(__name__)
+
+# Guards concurrent mutation of module-level model/data caches. Acquired by
+# invalidate_model_cache() (admin retrain thread) and any code path that
+# reads/writes _club_model, _club_top5_model, _intl_model, _club_matches_df.
+_cache_lock = threading.Lock()
 
 # Add project root to sys.path so we can import ml.src modules with full package path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent  # cupcast/
@@ -33,13 +44,10 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 ML_DIR = PROJECT_ROOT / "ml"
 
-MODELS_DIR = ML_DIR / "models"
+# Historical match data still lives on disk (rebuilt by the data pipeline).
+# Only model weights moved to GCS — feature engineering inputs are per-deploy
+# artifacts, small enough to bake into the container image.
 PROCESSED_DIR = ML_DIR / "data" / "processed"
-
-# Canonical model file names (must match what ml-engineer saves)
-CLUB_MODEL_FILENAME = "cupcast-club-model_best.joblib"
-CLUB_TOP5_MODEL_FILENAME = "cupcast-club-top5_best.joblib"
-INTL_MODEL_FILENAME = "cupcast-international-model_best.joblib"
 
 # Map backend DB league codes → ML pipeline league codes
 DB_TO_ML_LEAGUE = {
@@ -62,11 +70,36 @@ _club_matches_df = None  # Cached historical match data for feature engineering
 def invalidate_model_cache():
     """Clear cached models and data so next request loads fresh artifacts. Call after retrain."""
     global _club_model, _club_top5_model, _intl_model, _club_matches_df
-    _club_model = None
-    _club_top5_model = None
-    _intl_model = None
-    _club_matches_df = None
-    logger.info("Model cache invalidated — next prediction will load fresh model from disk")
+    with _cache_lock:
+        _club_model = None
+        _club_top5_model = None
+        _intl_model = None
+        _club_matches_df = None
+    logger.info("Model cache invalidated — next prediction will reload from GCS")
+
+
+def _load_from_gcs(uri: str, flavor: str):
+    """Download + deserialize an MLflow-logged model from GCS.
+
+    `flavor` picks the correct loader because sklearn and xgboost produce
+    different on-disk formats even though both expose the same predict_proba
+    interface at runtime. Misclassifying will raise an unpickling error.
+    """
+    if not uri:
+        raise RuntimeError(
+            "Model GCS URI is not configured. Set GCS_MODEL_URI_CLUB / "
+            "_TOP5 / _INTL in the backend environment (populated by "
+            "ml/register_models.py output)."
+        )
+    # Imported lazily so local tooling that never hits inference (alembic,
+    # admin scripts) doesn't pay the mlflow import cost.
+    import mlflow.sklearn
+    import mlflow.xgboost
+
+    loader = mlflow.sklearn if flavor == "sklearn" else mlflow.xgboost
+    model = loader.load_model(uri)
+    logger.info("Loaded %s model from %s", flavor, uri)
+    return model
 
 
 def get_club_model(league_code: str = "E0"):
@@ -76,18 +109,18 @@ def get_club_model(league_code: str = "E0"):
     to a specialist model trained on those leagues only. Lower English leagues
     use the general model trained on all leagues.
     """
-    global _club_model, _club_top5_model
+    global _club_top5_model
 
     if league_code in TOP5_ML_CODES:
         if _club_top5_model is None:
-            model_path = MODELS_DIR / CLUB_TOP5_MODEL_FILENAME
-            if model_path.exists():
-                import joblib
-                _club_top5_model = joblib.load(model_path)
-                logger.info("Loaded top5 specialist model from %s", model_path)
-            else:
-                logger.warning("Top5 model not found at %s, falling back to general", model_path)
-                return _load_general_club_model()
+            from config import settings
+            with _cache_lock:
+                # Double-check after acquiring the lock — another thread may
+                # have loaded it while we were waiting.
+                if _club_top5_model is None:
+                    _club_top5_model = _load_from_gcs(
+                        settings.gcs_model_uri_club_top5, flavor="sklearn"
+                    )
         return _club_top5_model
 
     return _load_general_club_model()
@@ -97,31 +130,25 @@ def _load_general_club_model():
     """Load the general club model (all leagues)."""
     global _club_model
     if _club_model is None:
-        model_path = MODELS_DIR / CLUB_MODEL_FILENAME
-        if not model_path.exists():
-            raise FileNotFoundError(
-                f"Club model not found at {model_path}. "
-                "Run the ML training pipeline first."
-            )
-        import joblib
-        _club_model = joblib.load(model_path)
-        logger.info("Loaded general club model from %s", model_path)
+        from config import settings
+        with _cache_lock:
+            if _club_model is None:
+                _club_model = _load_from_gcs(
+                    settings.gcs_model_uri_club, flavor="sklearn"
+                )
     return _club_model
 
 
 def get_intl_model():
-    """Lazy-load the production international model from disk."""
+    """Lazy-load the production international (XGBoost) model."""
     global _intl_model
     if _intl_model is None:
-        model_path = MODELS_DIR / INTL_MODEL_FILENAME
-        if not model_path.exists():
-            raise FileNotFoundError(
-                f"International model not found at {model_path}. "
-                "Run the ML training pipeline first."
-            )
-        import joblib
-        _intl_model = joblib.load(model_path)
-        logger.info("Loaded international model from %s", model_path)
+        from config import settings
+        with _cache_lock:
+            if _intl_model is None:
+                _intl_model = _load_from_gcs(
+                    settings.gcs_model_uri_intl, flavor="xgboost"
+                )
     return _intl_model
 
 
@@ -261,6 +288,21 @@ def generate_batch_predictions(db) -> int:
     count = 0
     skipped = 0
 
+    # Batch-fetch all existing predictions for these matches to avoid N+1 queries
+    # inside the upsert loop below. Build a (match_id, model_version) lookup.
+    _pred_match_ids = [m.id for (m, _) in match_index_map.values()]
+    _existing_preds = (
+        db.query(Prediction)
+        .filter(
+            Prediction.match_id.in_(_pred_match_ids),
+            Prediction.model_version == model_version,
+        )
+        .all()
+        if _pred_match_ids
+        else []
+    )
+    existing_by_match = {p.match_id: p for p in _existing_preds}
+
     for idx, (match, ml_league_code) in match_index_map.items():
         if idx >= len(upcoming_features):
             skipped += 1
@@ -298,11 +340,8 @@ def generate_batch_predictions(db) -> int:
                 odds_home=None, odds_draw=None, odds_away=None,
             )
 
-            # Upsert
-            existing = db.query(Prediction).filter(
-                Prediction.match_id == match.id,
-                Prediction.model_version == model_version,
-            ).first()
+            # Upsert — use batched lookup to avoid N+1 query per match
+            existing = existing_by_match.get(match.id)
 
             pred_data = dict(
                 match_id=match.id,
