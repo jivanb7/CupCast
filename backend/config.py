@@ -35,17 +35,22 @@ class Settings(BaseSettings):
     # In production, set DATABASE_URL to a Postgres connection string.
     database_url: str = _DEFAULT_DB_URL
 
-    # MLFlow tracking server — used for model registration/training runs only.
-    # Backend inference does NOT need this (models load directly from GCS).
+    # MLflow tracking server — the backend resolves `models:/<name>@prod`
+    # URIs at load time, so Cloud Run must be able to reach this host.
+    # In prod this is the Caddy-fronted HTTPS endpoint with basic auth.
     mlflow_tracking_uri: str = "http://localhost:5000"
+    # Basic auth credentials for the tracking server. MLflow picks these up
+    # automatically from MLFLOW_TRACKING_USERNAME/PASSWORD env vars — we
+    # still declare them here so pydantic validates they're set in prod.
+    mlflow_tracking_username: str = ""
+    mlflow_tracking_password: str = ""
 
-    # Model loading — canonical path is GCS via mlflow.*.load_model(gs://...).
-    # These are populated from MLflow registry at deploy time (see ml/register_models.py
-    # output). The server is firewalled to a single admin IP, so Cloud Run cannot
-    # hit the registry at runtime — we resolve the gs:// URIs up front instead.
-    gcs_model_uri_club: str = ""
-    gcs_model_uri_club_top5: str = ""
-    gcs_model_uri_intl: str = ""
+    # Registered model names in the MLflow Model Registry. The `@prod` alias
+    # resolves to whichever version is currently in production — flip the
+    # alias after retraining to promote a new model with no redeploy.
+    mlflow_model_club: str = "cupcast-club-model"
+    mlflow_model_club_top5: str = "cupcast-club-top5-model"
+    mlflow_model_intl: str = "cupcast-international-model"
 
     # GCP (optional — only required in production)
     gcp_project_id: str = ""

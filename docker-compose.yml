@@ -20,6 +20,9 @@
 #   DB_PASSWORD                  — PostgreSQL password
 #   ADMIN_API_KEY                — protects POST /api/v1/admin/* endpoints
 # Optional (features degrade gracefully without them):
+#   MLFLOW_TRACKING_URI          — override to point at remote registry (prod)
+#   MLFLOW_TRACKING_USERNAME     — basic auth user for Caddy-fronted MLflow
+#   MLFLOW_TRACKING_PASSWORD     — basic auth password
 #   FOOTBALL_DATA_ORG_API_KEY    — live scores via Football-Data.org free tier
 #   API_FOOTBALL_KEYS            — comma-separated api-sports.io keys (odds,
 #                                   player availability, lower leagues + MLS)
@@ -73,13 +76,11 @@ services:
       - "8000:8000"
     environment:
       DATABASE_URL: postgresql://cupcast:${DB_PASSWORD}@db:5432/cupcast
-      MLFLOW_TRACKING_URI: http://mlflow:5000
-      # Pass-through from host .env — gs:// paths populated by ml/register_models.py.
-      # Empty values are fine; prediction_service raises a clear error on first
-      # inference call if a required URI is missing.
-      GCS_MODEL_URI_CLUB: ${GCS_MODEL_URI_CLUB:-}
-      GCS_MODEL_URI_CLUB_TOP5: ${GCS_MODEL_URI_CLUB_TOP5:-}
-      GCS_MODEL_URI_INTL: ${GCS_MODEL_URI_INTL:-}
+      # Local dev points at the in-cluster MLflow (no auth needed).
+      # Production overrides with the public Caddy endpoint + basic auth.
+      MLFLOW_TRACKING_URI: ${MLFLOW_TRACKING_URI:-http://mlflow:5000}
+      MLFLOW_TRACKING_USERNAME: ${MLFLOW_TRACKING_USERNAME:-}
+      MLFLOW_TRACKING_PASSWORD: ${MLFLOW_TRACKING_PASSWORD:-}
       ADMIN_API_KEY: ${ADMIN_API_KEY}
       # Live score API keys — leave blank to disable polling
       FOOTBALL_DATA_ORG_API_KEY: ${FOOTBALL_DATA_ORG_API_KEY:-}

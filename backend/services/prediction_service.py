@@ -11,14 +11,18 @@ Responsibilities:
 
 Model loading:
   Models are cached as module-level singletons after first load.
-  Downloaded from GCS on first access using mlflow.sklearn.load_model /
-  mlflow.xgboost.load_model. The gs:// URIs come from backend config
-  (populated from MLflow registry at deploy time).
+  Loaded on first access via `mlflow.<flavor>.load_model("models:/<name>@prod")`.
+  MLflow resolves the `prod` alias to the current version, then downloads
+  the artifact from the registry's GCS backend.
 
-  This avoids any runtime dependency on the MLflow tracking server —
-  the server is firewalled to admin-only access, so Cloud Run cannot
-  reach it. Promoting a new model version = re-registering, updating
-  the GCS URI env var, and redeploying.
+  This gives us autonomous promotion: retraining → `mlflow models set-alias
+  prod <new_version>` → call POST /admin/models/reload on Cloud Run. No
+  env-var edits, no redeploy.
+
+  The tracking server is fronted by Caddy (HTTPS + basic auth) so Cloud Run
+  can reach it over the public internet with MLFLOW_TRACKING_USERNAME /
+  MLFLOW_TRACKING_PASSWORD creds, while the raw MLflow port stays firewalled
+  to admin IPs only.
 
 Integration with ML module:
   Feature engineering still lives in ml.src and is imported directly.
@@ -75,21 +79,22 @@ def invalidate_model_cache():
         _club_top5_model = None
         _intl_model = None
         _club_matches_df = None
-    logger.info("Model cache invalidated — next prediction will reload from GCS")
+    logger.info("Model cache invalidated — next prediction will reload from MLflow registry")
 
 
-def _load_from_gcs(uri: str, flavor: str):
-    """Download + deserialize an MLflow-logged model from GCS.
+def _load_from_registry(model_name: str, flavor: str):
+    """Pull a model from the MLflow registry via its `prod` alias.
 
-    `flavor` picks the correct loader because sklearn and xgboost produce
-    different on-disk formats even though both expose the same predict_proba
-    interface at runtime. Misclassifying will raise an unpickling error.
+    `flavor` picks the correct loader — sklearn and xgboost produce different
+    on-disk formats, and calling the wrong one raises an unpickling error.
+    The URI `models:/<name>@prod` tells MLflow to resolve the `prod` alias
+    to a concrete version at load time, then fetch its artifact from the
+    registry's backing store (GCS in our case).
     """
-    if not uri:
+    if not model_name:
         raise RuntimeError(
-            "Model GCS URI is not configured. Set GCS_MODEL_URI_CLUB / "
-            "_TOP5 / _INTL in the backend environment (populated by "
-            "ml/register_models.py output)."
+            "Registered model name is not configured. Set "
+            "MLFLOW_MODEL_CLUB / _TOP5 / _INTL in the backend environment."
         )
     # Imported lazily so local tooling that never hits inference (alembic,
     # admin scripts) doesn't pay the mlflow import cost.
@@ -97,6 +102,7 @@ def _load_from_gcs(uri: str, flavor: str):
     import mlflow.xgboost
 
     loader = mlflow.sklearn if flavor == "sklearn" else mlflow.xgboost
+    uri = f"models:/{model_name}@prod"
     model = loader.load_model(uri)
     logger.info("Loaded %s model from %s", flavor, uri)
     return model
@@ -118,8 +124,11 @@ def get_club_model(league_code: str = "E0"):
                 # Double-check after acquiring the lock — another thread may
                 # have loaded it while we were waiting.
                 if _club_top5_model is None:
-                    _club_top5_model = _load_from_gcs(
-                        settings.gcs_model_uri_club_top5, flavor="sklearn"
+                    # Top5 is a CalibratedClassifierCV wrapping an XGBoost booster,
+                    # so the mlflow flavor is sklearn (CalibratedClassifierCV is
+                    # sklearn-native, even though the inner estimator is xgb).
+                    _club_top5_model = _load_from_registry(
+                        settings.mlflow_model_club_top5, flavor="sklearn"
                     )
         return _club_top5_model
 
@@ -133,8 +142,8 @@ def _load_general_club_model():
         from config import settings
         with _cache_lock:
             if _club_model is None:
-                _club_model = _load_from_gcs(
-                    settings.gcs_model_uri_club, flavor="sklearn"
+                _club_model = _load_from_registry(
+                    settings.mlflow_model_club, flavor="sklearn"
                 )
     return _club_model
 
@@ -146,8 +155,8 @@ def get_intl_model():
         from config import settings
         with _cache_lock:
             if _intl_model is None:
-                _intl_model = _load_from_gcs(
-                    settings.gcs_model_uri_intl, flavor="xgboost"
+                _intl_model = _load_from_registry(
+                    settings.mlflow_model_intl, flavor="xgboost"
                 )
     return _intl_model
 

@@ -12,13 +12,12 @@
 #   GCP_PROJECT_ID, GCP_WORKLOAD_IDENTITY_PROVIDER, GCP_SERVICE_ACCOUNT
 #   DATABASE_URL                  — Supabase Postgres connection string
 #   ADMIN_API_KEY                 — protects POST /api/v1/admin/*
-#   MLFLOW_TRACKING_URI           — http://<GCP_VM_IP>:5000 (admin/training only)
+#   MLFLOW_TRACKING_URI           — https://<caddy-host>  (Cloud Run loads models via this)
+#   MLFLOW_TRACKING_USERNAME      — basic auth user for Caddy-fronted MLflow
+#   MLFLOW_TRACKING_PASSWORD      — basic auth password
 #   API_FOOTBALL_KEYS             — comma-separated api-sports.io keys
 #   FOOTBALL_DATA_ORG_API_KEY     — Football-Data.org free-tier key
-#   GCS_BUCKET                    — bucket holding trained model artifacts
-#   GCS_MODEL_URI_CLUB            — gs:// path to registered club model (from ml/register_models.py)
-#   GCS_MODEL_URI_CLUB_TOP5       — gs:// path to registered top-5 club model
-#   GCS_MODEL_URI_INTL            — gs:// path to registered international model
+#   GCS_BUCKET                    — bucket holding trained model artifacts (read by runtime SA)
 #   VITE_API_URL                  — public backend URL baked into the frontend build
 
 name: Deploy
@@ -84,9 +83,8 @@ jobs:
             --set-env-vars DATABASE_URL=${{ secrets.DATABASE_URL }} \
             --set-env-vars ADMIN_API_KEY=${{ secrets.ADMIN_API_KEY }} \
             --set-env-vars MLFLOW_TRACKING_URI=${{ secrets.MLFLOW_TRACKING_URI }} \
-            --set-env-vars GCS_MODEL_URI_CLUB=${{ secrets.GCS_MODEL_URI_CLUB }} \
-            --set-env-vars GCS_MODEL_URI_CLUB_TOP5=${{ secrets.GCS_MODEL_URI_CLUB_TOP5 }} \
-            --set-env-vars GCS_MODEL_URI_INTL=${{ secrets.GCS_MODEL_URI_INTL }} \
+            --set-env-vars MLFLOW_TRACKING_USERNAME=${{ secrets.MLFLOW_TRACKING_USERNAME }} \
+            --set-env-vars MLFLOW_TRACKING_PASSWORD=${{ secrets.MLFLOW_TRACKING_PASSWORD }} \
             --set-env-vars GCP_PROJECT_ID=${{ secrets.GCP_PROJECT_ID }} \
             --set-env-vars GCS_BUCKET=${{ secrets.GCS_BUCKET }} \
             --set-env-vars API_FOOTBALL_KEYS=${{ secrets.API_FOOTBALL_KEYS }} \

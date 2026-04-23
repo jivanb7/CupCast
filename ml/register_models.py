@@ -14,8 +14,15 @@ What it does:
        b. Logs the model as the appropriate flavor (sklearn / xgboost)
        c. Registers as a versioned model in the registry
        d. Tags v1 with an 'prod' alias (MLflow 3.x replacement for stages)
-  3. Prints the resolved GCS artifact URI for each Production version
-     (paste into deploy.yml secrets: GCS_MODEL_URI_CLUB / _TOP5 / _INTL).
+  3. Prints the resolved GCS artifact URI for each prod version
+     (informational — backend loads via `models:/<name>@prod`, so the URIs
+     don't need to be copied anywhere; they're shown for debugging).
+
+Retraining workflow (once v2+ exist):
+  - Register new version from the training run
+  - Flip alias: `mlflow models set-alias -n <name> -a prod -v <new_version>`
+  - Call `POST /admin/models/reload` on the backend to invalidate its cache
+  No redeploy, no secret edits.
 
 This script is idempotent-ish: re-running will create new runs and new
 model versions (v2, v3, ...) but won't duplicate experiments. Use the
@@ -118,12 +125,13 @@ def main() -> int:
         uri = log_and_register(MODELS_DIR / joblib_name, exp_name, model_name)
         results.append((model_name, uri))
 
-    # Print deploy-time env var snippet at the end — copy/paste into deploy.yml
+    # Print resolved artifact URIs for debugging. Backend loads via
+    # models:/<name>@prod, so these don't need to be copied anywhere.
     print("\n" + "=" * 60)
-    print("GCS model URIs (paste into backend env config):")
+    print("Registered models (backend loads via models:/<name>@prod):")
     print("=" * 60)
     for name, uri in results:
-        print(f"  {name}: {uri}")
+        print(f"  {name} → {uri}")
     return 0
 
 
