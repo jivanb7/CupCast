@@ -80,6 +80,15 @@ ESPN_LEAGUES = {
 # weeks out, so 30 days is plenty; larger windows slow the call without return.
 LOOKAHEAD_DAYS = 30
 
+# Per-slug overrides for leagues that publish long windows. The 2026 World Cup
+# has all 100 group-stage + knockout fixtures on ESPN already (from ~7 weeks
+# before kickoff), and a 30-day default window misses the entire tournament
+# until mid-May. Longer windows are only cheap on ESPN — no rate limit — so we
+# can safely ask for the full tournament.
+LOOKAHEAD_OVERRIDES = {
+    "fifa.world": 120,
+}
+
 
 def _current_season_str() -> str:
     # Same format as fixture_seeder._current_season_str.
@@ -146,13 +155,14 @@ def seed_from_espn(db: Session) -> dict:
     stats = {"seeded": 0, "already_exists": 0, "skipped": 0, "unresolved": 0}
 
     start = date.today()
-    end = start + timedelta(days=LOOKAHEAD_DAYS)
 
     for slug, db_league_code in ESPN_LEAGUES.items():
         league = db.query(League).filter(League.code == db_league_code).first()
         if not league:
             continue
 
+        lookahead = LOOKAHEAD_OVERRIDES.get(slug, LOOKAHEAD_DAYS)
+        end = start + timedelta(days=lookahead)
         events = _fetch_scoreboard(slug, start, end)
         logger.info("ESPN %s (%s): %d events", slug, db_league_code, len(events))
 
