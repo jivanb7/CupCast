@@ -188,9 +188,10 @@ def generate_batch_predictions(db) -> int:
 
     try:
         from ml.src.config import CLUB_FEATURES, INT_TO_RESULT
-    except ImportError:
-        INT_TO_RESULT = {0: "H", 1: "D", 2: "A"}
-        raise ImportError("Cannot import ml.src.config — required for predictions")
+    except ImportError as e:
+        # Surface the real underlying cause — without it a missing submodule
+        # or bad PYTHONPATH produces an undiagnosable 500.
+        raise ImportError(f"Cannot import ml.src.config: {e}") from e
 
     # Load historical match data (cached)
     global _club_matches_df
@@ -204,7 +205,7 @@ def generate_batch_predictions(db) -> int:
     try:
         from ml.src.feature_engineering import build_feature_matrix
     except ImportError as e:
-        raise ImportError(f"Cannot import feature engineering: {e}")
+        raise ImportError(f"Cannot import feature engineering: {e}") from e
 
     # Fetch upcoming scheduled matches
     today = date.today()
