@@ -29,6 +29,10 @@ pyarrow>=14.0.0
 optuna>=4.7.0
 mlflow>=3.10.0
 shap>=0.50.0
+# MLflow resolves model artifacts from gs:// URIs (our prod registry backend is
+# GCS). Without google-cloud-storage, every predict call fails with
+# "No module named 'google.cloud'" — silently skipping every match.
+google-cloud-storage>=2.18.0
 
 # Background scheduling
 APScheduler>=3.11.0
