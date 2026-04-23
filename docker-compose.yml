@@ -1,6 +1,10 @@
 # CupCast — Local Development Docker Compose
 # Runs 4 services: PostgreSQL, MLFlow, FastAPI backend, React frontend
 #
+# Cloud note: in production the `db` service is replaced by Supabase Postgres
+# (set DATABASE_URL to the Supabase connection string on Cloud Run). MLFlow
+# stays on the GCP VM. Frontend + backend both deploy to Cloud Run.
+#
 # Usage:
 #   docker compose up --build        # Start all services
 #   docker compose up db mlflow      # Start only database + MLFlow
@@ -10,14 +14,15 @@
 #   5432 → PostgreSQL
 #   5000 → MLFlow UI
 #   8000 → FastAPI backend
-#   3000 → React frontend
+#   3000 → React frontend (container listens on 8080 for Cloud Run parity)
 #
 # Required environment variables (copy .env.example → .env and fill in):
 #   DB_PASSWORD                  — PostgreSQL password
 #   ADMIN_API_KEY                — protects POST /api/v1/admin/* endpoints
 # Optional (features degrade gracefully without them):
 #   FOOTBALL_DATA_ORG_API_KEY    — live scores via Football-Data.org free tier
-#   API_FOOTBALL_KEY             — live scores via api-sports.io (lower leagues + MLS)
+#   API_FOOTBALL_KEYS            — comma-separated api-sports.io keys (odds,
+#                                   player availability, lower leagues + MLS)
 #   ENABLE_SCHEDULER             — set to "true" to activate background refresh jobs
 #   KAGGLE_USERNAME / KAGGLE_KEY — required only if re-running data ingestion
 
@@ -69,11 +74,18 @@ services:
     environment:
       DATABASE_URL: postgresql://cupcast:${DB_PASSWORD}@db:5432/cupcast
       MLFLOW_TRACKING_URI: http://mlflow:5000
-      MODEL_LOAD_MODE: registry
+      # Pass-through from host .env — gs:// paths populated by ml/register_models.py.
+      # Empty values are fine; prediction_service raises a clear error on first
+      # inference call if a required URI is missing.
+      GCS_MODEL_URI_CLUB: ${GCS_MODEL_URI_CLUB:-}
+      GCS_MODEL_URI_CLUB_TOP5: ${GCS_MODEL_URI_CLUB_TOP5:-}
+      GCS_MODEL_URI_INTL: ${GCS_MODEL_URI_INTL:-}
       ADMIN_API_KEY: ${ADMIN_API_KEY}
       # Live score API keys — leave blank to disable polling
       FOOTBALL_DATA_ORG_API_KEY: ${FOOTBALL_DATA_ORG_API_KEY:-}
-      API_FOOTBALL_KEY: ${API_FOOTBALL_KEY:-}
+      # Comma-separated api-sports.io keys (rotator picks in turn). Plural name
+      # matches backend/config.py:Settings.api_football_keys.
+      API_FOOTBALL_KEYS: ${API_FOOTBALL_KEYS:-}
       # Set to "true" to enable background score/fixture/prediction refresh jobs
       ENABLE_SCHEDULER: ${ENABLE_SCHEDULER:-false}
     volumes:
@@ -96,8 +108,9 @@ services:
 
   frontend:
     build: ./frontend
+    # Container listens on 8080 (Cloud Run default); host keeps 3000 for dev.
     ports:
-      - "3000:3000"
+      - "3000:8080"
     environment:
       VITE_API_URL: http://localhost:8000
     depends_on:

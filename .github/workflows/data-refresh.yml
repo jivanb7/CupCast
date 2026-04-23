@@ -1,0 +1,73 @@
+# CupCast Data Refresh + Retrain Pipeline
+# Trigger: Monday 6AM UTC (after weekend matches complete)
+# Also: manual trigger via workflow_dispatch
+#
+# Steps:
+#   1. Download latest CSVs from all sources
+#   2. Process and update database
+#   3. Re-run feature engineering
+#   4. Retrain models (both club and international)
+#   5. If new model outperforms production → promote in MLFlow registry
+#   6. Regenerate predictions for upcoming matches
+#
+# NOTE: This job runs for 30-60+ minutes. Timeout set to 90 minutes.
+# If the job fails partway, re-run from the last successful step using
+# workflow_dispatch with step parameter.
+
+name: Data Refresh
+
+on:
+  schedule:
+    - cron: "0 6 * * 1"  # Monday 6AM UTC
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "Pipeline mode"
+        required: false
+        default: "full"
+        type: choice
+        options:
+          - full
+          - data-only
+          - predict-only
+          - train-only
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install ML dependencies
+        run: pip install -r ml/requirements.txt
+
+      - name: Configure Kaggle credentials
+        run: |
+          mkdir -p ~/.kaggle
+          echo '{"username":"${{ secrets.KAGGLE_USERNAME }}","key":"${{ secrets.KAGGLE_KEY }}"}' > ~/.kaggle/kaggle.json
+          chmod 600 ~/.kaggle/kaggle.json
+
+      - name: Run pipeline
+        run: |
+          python ml/run_pipeline.py --mode ${{ github.event.inputs.mode || 'full' }}
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          MLFLOW_TRACKING_URI: ${{ secrets.MLFLOW_TRACKING_URI }}
+          KAGGLE_USERNAME: ${{ secrets.KAGGLE_USERNAME }}
+          KAGGLE_KEY: ${{ secrets.KAGGLE_KEY }}
+          FOOTBALL_DATA_ORG_API_KEY: ${{ secrets.FOOTBALL_DATA_ORG_API_KEY }}
+          # Needed by odds_service + player_availability_service during ingestion.
+          API_FOOTBALL_KEYS: ${{ secrets.API_FOOTBALL_KEYS }}
+          PYTHONPATH: .
+
+      - name: Notify on failure
+        if: failure()
+        run: |
+          echo "Data refresh pipeline FAILED. Check logs."
+          # TODO (devops-engineer): add Slack webhook notification here
