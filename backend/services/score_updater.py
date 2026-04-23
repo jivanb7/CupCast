@@ -27,6 +27,9 @@ from typing import Optional
 
 import pandas as pd
 import requests
+
+# Module-level Session for connection pooling across scheduler job invocations
+_session = requests.Session()
 from sqlalchemy.orm import Session
 
 logger = logging.getLogger(__name__)
@@ -61,7 +64,7 @@ def fetch_latest_results(div_code: str) -> Optional[pd.DataFrame]:
     season = _current_season_code()
     url = f"{FOOTBALL_DATA_UK_BASE}/{season}/{div_code}.csv"
     try:
-        resp = requests.get(url, timeout=30)
+        resp = _session.get(url, timeout=30)
         if resp.status_code == 404:
             logger.warning("No data for %s season %s", div_code, season)
             return None
@@ -273,8 +276,14 @@ def update_scores(db: Session) -> dict:
             .all()
         )
         if unevaluated:
+            # Batch-fetch matches for all unevaluated predictions in a single query
+            match_ids = {pred.match_id for pred in unevaluated}
+            matches_by_id = {
+                m.id: m
+                for m in db.query(Match).filter(Match.id.in_(match_ids)).all()
+            }
             for pred in unevaluated:
-                match = db.query(Match).filter(Match.id == pred.match_id).first()
+                match = matches_by_id.get(pred.match_id)
                 if match and match.result:
                     pred.was_correct = (pred.predicted_result == match.result)
             db.commit()
@@ -308,7 +317,7 @@ def update_scores_from_live_api(db: Session) -> dict:
 
     try:
         headers = {"X-Auth-Token": api_key}
-        resp = requests.get(
+        resp = _session.get(
             "https://api.football-data.org/v4/matches",
             headers=headers,
             timeout=15,
@@ -395,6 +404,21 @@ def update_scores_from_live_api(db: Session) -> dict:
             if not match:
                 continue
 
+            # Time guard: FD.org occasionally reports FINISHED prematurely. Only
+            # trust it if 100 min have passed since kickoff (regulation + stoppage).
+            # Otherwise just sync the score and keep status as 'live'.
+            from datetime import datetime as _dt, timezone as _tz
+            past_full_time = False
+            if match.kickoff_time and match.match_date:
+                try:
+                    _dh, _dm = match.kickoff_time.split(":")
+                    _ko = _dt.combine(match.match_date, _dt.min.time(), tzinfo=_tz.utc).replace(
+                        hour=int(_dh), minute=int(_dm)
+                    )
+                    past_full_time = (_dt.now(_tz.utc) - _ko).total_seconds() >= 6000
+                except (ValueError, AttributeError):
+                    past_full_time = False
+
             # Update the match
             if home_goals > away_goals:
                 result = "H"
@@ -406,15 +430,19 @@ def update_scores_from_live_api(db: Session) -> dict:
             match.home_goals = home_goals
             match.away_goals = away_goals
             match.result = result
-            match.status = "completed"
-
-            # Evaluate predictions
-            predictions = db.query(Prediction).filter(Prediction.match_id == match.id).all()
-            for pred in predictions:
-                pred.was_correct = (pred.predicted_result == result)
-
-            stats["updated"] += 1
-            logger.info("Live API: updated %s %d-%d %s", home_name, home_goals, away_goals, away_name)
+            if past_full_time:
+                match.status = "completed"
+                # Evaluate predictions only once we trust the FINISHED signal.
+                predictions = db.query(Prediction).filter(Prediction.match_id == match.id).all()
+                for pred in predictions:
+                    pred.was_correct = (pred.predicted_result == result)
+                stats["updated"] += 1
+                logger.info("Live API: completed %s %d-%d %s", home_name, home_goals, away_goals, away_name)
+            else:
+                logger.info(
+                    "Live API: FINISHED too early for %s vs %s (kickoff %s) — score synced, status left 'live'",
+                    home_name, away_name, match.kickoff_time,
+                )
 
         try:
             db.commit()

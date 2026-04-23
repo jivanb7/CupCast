@@ -4,8 +4,11 @@ ml/run_pipeline.py
 Top-level orchestration script for the CupCast ML pipeline (SaaS deployment).
 
 Usage:
-  # Full pipeline: ingest → process → features → train
+  # Full pipeline: ingest → process → features → train → predict
   conda run -n ml python -m ml.run_pipeline --mode full
+
+  # Just generate new predictions (skip re-training)
+  conda run -n ml python -m ml.run_pipeline --mode predict-only
 
   # Just ingest + process + features (no training)
   conda run -n ml python -m ml.run_pipeline --mode data-only
@@ -32,7 +35,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="CupCast ML Pipeline (SaaS)")
     parser.add_argument(
         "--mode",
-        choices=["full", "data-only", "train-only"],
+        choices=["full", "predict-only", "data-only", "train-only"],
         default="full",
         help="Pipeline mode",
     )
@@ -102,6 +105,42 @@ def main() -> int:
             except Exception:
                 logger.exception("International model training failed")
                 return 1
+
+    # ── Predictions ──
+    if mode in ("full", "predict-only"):
+        logger.info("=== Stage: Prediction ===")
+        try:
+            from ml.src.predict import (
+                load_production_model,
+                batch_predict_upcoming,
+                write_predictions_to_db,
+            )
+
+            club_model = load_production_model("club")
+        except Exception:
+            logger.exception("Failed to load club model — cannot generate predictions")
+            return 1
+
+        intl_model = None
+        try:
+            intl_model = load_production_model("intl")
+        except Exception:
+            logger.warning("International model not available — skipping intl predictions")
+
+        try:
+            predictions = batch_predict_upcoming(club_model, intl_model)
+            if len(predictions) > 0:
+                write_predictions_to_db(
+                    predictions,
+                    db_url="",  # Empty = auto-detect from backend config
+                    model_version="latest",
+                )
+                logger.info("Wrote %d predictions", len(predictions))
+            else:
+                logger.warning("No predictions generated (missing fixtures?)")
+        except Exception:
+            logger.exception("Prediction generation failed")
+            return 1
 
     logger.info("Pipeline complete (mode=%s)", mode)
     return 0

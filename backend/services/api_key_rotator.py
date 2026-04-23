@@ -106,30 +106,40 @@ class ApiKeyRotator:
 
         Uses a sliding window of request timestamps. Must be called while
         holding self._lock — releases the lock while sleeping so other
-        threads aren't blocked unnecessarily.
+        threads aren't blocked unnecessarily. The release/acquire dance is
+        wrapped in try/finally so an exception raised while sleeping (e.g.
+        SystemExit on SIGTERM) cannot leave the lock in a mismatched state
+        for the enclosing `with self._lock:` context manager.
         """
-        now = time.monotonic()
         window = 60.0
 
-        # Purge timestamps older than 60s
-        while self._request_timestamps and self._request_timestamps[0] <= now - window:
-            self._request_timestamps.popleft()
+        while True:
+            now = time.monotonic()
+            # Purge timestamps older than 60s
+            while self._request_timestamps and self._request_timestamps[0] <= now - window:
+                self._request_timestamps.popleft()
 
-        if len(self._request_timestamps) >= MAX_REQUESTS_PER_MINUTE:
+            if len(self._request_timestamps) < MAX_REQUESTS_PER_MINUTE:
+                break
+
             oldest = self._request_timestamps[0]
             sleep_for = oldest - (now - window) + 0.05  # small buffer
-            if sleep_for > 0:
-                logger.warning(
-                    "Rate limit: %d requests in last 60s — sleeping %.1fs",
-                    len(self._request_timestamps), sleep_for,
-                )
-                self._lock.release()
+            if sleep_for <= 0:
+                break
+
+            logger.warning(
+                "Rate limit: %d requests in last 60s — sleeping %.1fs",
+                len(self._request_timestamps), sleep_for,
+            )
+            self._lock.release()
+            try:
                 time.sleep(sleep_for)
+            finally:
+                # Guarantee the lock is re-acquired even if sleep was
+                # interrupted — the caller's `with` block must be able to
+                # release it cleanly on the way out.
                 self._lock.acquire()
-                # Re-purge after sleeping
-                now = time.monotonic()
-                while self._request_timestamps and self._request_timestamps[0] <= now - window:
-                    self._request_timestamps.popleft()
+            # Loop to re-check the window (another thread may have filled it)
 
         # Record this request
         self._request_timestamps.append(time.monotonic())

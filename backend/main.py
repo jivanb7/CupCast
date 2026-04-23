@@ -76,6 +76,13 @@ async def lifespan(app: FastAPI):
     # Single background thread: refresh fixtures → seed → predict → backfill scores
     # Order matters: fixtures must be seeded as "scheduled" before score backfill
     # marks them as "completed", otherwise predictions can't be written.
+    #
+    # Production (Cloud Run): skipped. Cloud Run spins up new instances on cold
+    # start, and running the full pipeline every cold start would hammer the DB
+    # and the upstream APIs. In prod, Cloud Scheduler hits /admin/* on the
+    # schedule defined in infra/gcp/scheduler.sh instead.
+    from config import settings as _prod_settings
+    _is_prod = _prod_settings.environment == "production"
     from threading import Thread
 
     def _startup_data_refresh():
@@ -136,7 +143,10 @@ async def lifespan(app: FastAPI):
 
         print("[STARTUP] All startup tasks complete", flush=True)
 
-    Thread(target=_startup_data_refresh, daemon=True, name="startup-refresh").start()
+    if _is_prod:
+        logger.info("Startup data-refresh thread skipped (prod — Cloud Scheduler handles this)")
+    else:
+        Thread(target=_startup_data_refresh, daemon=True, name="startup-refresh").start()
 
     # Initialize API-Football key rotator from comma-separated key list
     from config import settings
@@ -145,19 +155,26 @@ async def lifespan(app: FastAPI):
     if api_football_keys:
         init_rotator(api_football_keys)
 
-    # Auto-start live score polling if any API key is configured
+    # Auto-start live score polling if any API key is configured.
+    # Production: skipped. In-process polling doesn't survive Cloud Run scale-to-zero
+    # and duplicates across concurrent instances. Cloud Scheduler drives
+    # /admin/scores/update every 2 min during match windows instead
+    # (see infra/gcp/scheduler.sh).
     from services.live_score_service import live_scores
-    try:
-        has_api_football = bool(api_football_keys)
-        if settings.football_data_org_api_key or has_api_football:
-            live_scores.configure(
-                api_key=settings.football_data_org_api_key,
-                poll_interval=10,
-                use_api_football_rotator=has_api_football,
-            )
-            live_scores.start()
-    except Exception as e:
-        logger.error("Live score polling failed to start: %s — continuing without live scores", e)
+    if _is_prod:
+        logger.info("Live score polling skipped (prod — Cloud Scheduler handles this)")
+    else:
+        try:
+            has_api_football = bool(api_football_keys)
+            if settings.football_data_org_api_key or has_api_football:
+                live_scores.configure(
+                    api_key=settings.football_data_org_api_key,
+                    poll_interval=10,
+                    use_api_football_rotator=has_api_football,
+                )
+                live_scores.start()
+        except Exception as e:
+            logger.error("Live score polling failed to start: %s — continuing without live scores", e)
 
     yield
 

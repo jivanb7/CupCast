@@ -18,6 +18,18 @@ function formatDate(dateStr) {
   })
 }
 
+// Convert the backend's UTC "HH:MM" string to the viewer's local time.
+// Same logic used on the dashboard card; keeps display consistent.
+function formatKickoffTime(utcTime) {
+  if (!utcTime || utcTime === 'nan' || utcTime === 'NaN') return null
+  const today = new Date().toISOString().slice(0, 10)
+  const utcDate = new Date(`${today}T${utcTime}:00Z`)
+  if (isNaN(utcDate.getTime())) return null
+  return utcDate.toLocaleTimeString('en-US', {
+    hour: 'numeric', minute: '2-digit', hour12: true, timeZoneName: 'short',
+  })
+}
+
 function StatRow({ label, home, away }) {
   if (home == null && away == null) return null
   return (
@@ -54,11 +66,20 @@ export default function MatchDetail() {
       .finally(() => setLoading(false))
   }, [matchId])
 
+  // Adaptive polling: faster when live, slower when scheduled, rarely when completed
   useEffect(() => {
     fetchMatch(true)
-    const interval = setInterval(() => fetchMatch(false), 30000)
-    return () => clearInterval(interval)
   }, [fetchMatch])
+
+  useEffect(() => {
+    if (!match) return
+    const pollMs =
+      match.status === 'live' ? 15000 :
+      match.status === 'completed' ? 300000 :
+      60000
+    const interval = setInterval(() => fetchMatch(false), pollMs)
+    return () => clearInterval(interval)
+  }, [match?.status, fetchMatch])
 
   if (loading) {
     return (
@@ -98,6 +119,9 @@ export default function MatchDetail() {
           <span className="flex items-center gap-1.5 text-xs text-foreground-muted">
             <Clock className="w-3.5 h-3.5" />
             {formatDate(match.match_date)}
+            {match.kickoff_time && formatKickoffTime(match.kickoff_time) && (
+              <span className="ml-1">· {formatKickoffTime(match.kickoff_time)}</span>
+            )}
           </span>
         </div>
 

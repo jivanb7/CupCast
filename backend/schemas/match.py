@@ -32,6 +32,14 @@ class PredictionSummary(BaseModel):
     value_pick_direction: Optional[str] = None
     explanation_text: Optional[str] = None
     was_correct: Optional[bool] = None  # None=not yet played, True/False=after result
+    # Bookmaker odds + edge exposed so the dashboard can render a compact
+    # H/D/A row next to probabilities on upcoming matches.
+    odds_home: Optional[float] = None
+    odds_draw: Optional[float] = None
+    odds_away: Optional[float] = None
+    edge_home: Optional[float] = None
+    edge_draw: Optional[float] = None
+    edge_away: Optional[float] = None
 
     model_config = {"from_attributes": True}
 
@@ -53,9 +61,11 @@ class MatchSummary(BaseModel):
     home_team_id: int
     home_team_name: str
     home_team_short_name: Optional[str] = None
+    home_team_crest: Optional[str] = None
     away_team_id: int
     away_team_name: str
     away_team_short_name: Optional[str] = None
+    away_team_crest: Optional[str] = None
     league_code: str
     league_name: str
     season: Optional[str] = None

@@ -9,6 +9,7 @@ const MatchDetail = lazy(() => import('./pages/MatchDetail'))
 const WorldCupHub = lazy(() => import('./pages/WorldCupHub'))
 const ModelPerformance = lazy(() => import('./pages/ModelPerformance'))
 const About = lazy(() => import('./pages/About'))
+const ValuePicks = lazy(() => import('./pages/ValuePicks'))
 
 function PageFallback() {
   return (
@@ -29,6 +30,7 @@ export default function App() {
             <Route path="/match/:matchId" element={<MatchDetail />} />
             <Route path="/world-cup" element={<WorldCupHub />} />
             <Route path="/model-performance" element={<ModelPerformance />} />
+            <Route path="/value-picks" element={<ValuePicks />} />
             <Route path="/about" element={<About />} />
           </Routes>
         </Suspense>

@@ -145,6 +145,61 @@ def refresh_all_players(
         raise HTTPException(status_code=500, detail=f"Player refresh failed: {str(e)}")
 
 
+@router.post("/odds/refresh")
+def refresh_all_odds(
+    _key: str = Depends(verify_admin_key),
+    db: Session = Depends(get_db),
+):
+    """Refresh bookmaker odds + value-pick flags for upcoming matches in all leagues.
+
+    Fetches /fixtures + /odds from API-Football for each league, matches fixtures
+    to DB matches, and upserts odds_home/draw/away + recomputed edges onto every
+    Prediction row. Runs synchronously and returns counts.
+
+    API cost: ~5 calls per league (1 fixtures + ~4 odds pages) = ~50 calls total.
+
+    Expected schedule (Cloud Scheduler, both UTC):
+      - 07:30 daily — after prediction refresh at 07:00
+      - 15:00 daily — mid-day top-up for late-priced matches
+    """
+    from services.odds_service import refresh_all_leagues_odds
+
+    try:
+        result = refresh_all_leagues_odds(db)
+        return {"status": "done", **result}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Odds refresh failed: {str(e)}")
+
+
+@router.post("/odds/refresh/{league_code}")
+def refresh_league_odds(
+    league_code: str,
+    _key: str = Depends(verify_admin_key),
+    db: Session = Depends(get_db),
+):
+    """Refresh odds + value-pick flags for a single league."""
+    from services.odds_service import refresh_odds_for_league
+    from services.player_availability_service import LEAGUE_API_FOOTBALL_IDS
+
+    if league_code not in LEAGUE_API_FOOTBALL_IDS:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"Unknown league_code '{league_code}'. "
+                f"Must be one of: {sorted(LEAGUE_API_FOOTBALL_IDS.keys())}"
+            ),
+        )
+
+    try:
+        stats = refresh_odds_for_league(db, league_code)
+        return {"status": "done", **stats}
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Odds refresh failed for '{league_code}': {str(e)}",
+        )
+
+
 @router.post("/players/refresh/{league_code}")
 def refresh_league_players(
     league_code: str,

@@ -34,7 +34,9 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 _scheduler_thread: Optional[Thread] = None
+_scheduler = None  # BlockingScheduler instance, set from _scheduler_loop
 _running = False
+_scheduler = None  # Holds the BlockingScheduler instance so stop_scheduler can call shutdown()
 
 
 def _get_db_session():
@@ -96,6 +98,29 @@ def _run_fixture_seed():
         db.close()
 
 
+def _run_odds_refresh():
+    """Scheduled task: refresh bookmaker odds + value-pick flags.
+
+    Runs after prediction refresh so it can overwrite the edge fields that
+    generate_batch_predictions zeros out. Calls API-Football /fixtures + /odds
+    per tracked league (~50 requests total per run).
+    """
+    logger.info("Scheduler: starting odds refresh at %s", datetime.utcnow().isoformat())
+    db = _get_db_session()
+    try:
+        from services.odds_service import refresh_all_leagues_odds
+        stats = refresh_all_leagues_odds(db)
+        logger.info(
+            "Scheduler: odds refresh done — matches=%d predictions=%d",
+            stats.get("total_matches_updated", 0),
+            stats.get("total_predictions_updated", 0),
+        )
+    except Exception as e:
+        logger.error("Scheduler: odds refresh failed — %s", e)
+    finally:
+        db.close()
+
+
 def _run_player_refresh():
     """Scheduled task: refresh player top scorers and injuries for all leagues.
 
@@ -117,7 +142,7 @@ def _run_player_refresh():
 
 def _scheduler_loop():
     """Main scheduler loop using APScheduler."""
-    global _running
+    global _running, _scheduler
 
     try:
         from apscheduler.schedulers.blocking import BlockingScheduler
@@ -131,6 +156,7 @@ def _scheduler_loop():
         return
 
     scheduler = BlockingScheduler()
+    _scheduler = scheduler
 
     score_interval = int(os.environ.get("SCHEDULER_SCORE_INTERVAL_HOURS", "2"))
 
@@ -181,9 +207,20 @@ def _scheduler_loop():
         replace_existing=True,
     )
 
+    # Odds refresh: 07:30 UTC (right after predictions — overwrites zeroed edges)
+    # and 15:00 UTC (mid-day top-up for late-priced matches)
+    for hour, minute in [(7, 30), (15, 0)]:
+        scheduler.add_job(
+            _run_odds_refresh,
+            CronTrigger(hour=hour, minute=minute),
+            id=f"odds_refresh_{hour:02d}{minute:02d}",
+            name=f"Refresh bookmaker odds ({hour:02d}:{minute:02d} UTC)",
+            replace_existing=True,
+        )
+
     logger.info(
         "Scheduler started: fixture seeds at 01/10/18 UTC, scores every %dh, "
-        "players at 05:00, data at 06:00, predictions at 07:00 UTC",
+        "players at 05:00, data at 06:00, predictions at 07:00, odds at 07:30+15:00 UTC",
         score_interval,
     )
 
@@ -194,6 +231,7 @@ def _scheduler_loop():
         pass
     finally:
         _running = False
+        _scheduler = None
 
 
 def start_scheduler():
@@ -214,7 +252,20 @@ def start_scheduler():
 
 
 def stop_scheduler():
-    """Signal the scheduler to stop (it will exit on next check)."""
-    global _running
+    """Shut down the APScheduler cleanly so in-flight jobs can finish their DB work.
+
+    No-op if the scheduler was never started. Cloud Run shutdown hits this on
+    SIGTERM; without a real shutdown, DB sessions owned by in-flight jobs would
+    leak because BlockingScheduler.shutdown() was never called.
+    """
+    global _running, _scheduler
     _running = False
-    logger.info("Scheduler stop requested")
+    scheduler = _scheduler
+    if scheduler is not None:
+        try:
+            scheduler.shutdown(wait=False)
+            logger.info("Scheduler shutdown complete")
+        except Exception as e:
+            logger.warning("Scheduler shutdown raised: %s", e)
+    else:
+        logger.info("Scheduler stop requested (not running)")

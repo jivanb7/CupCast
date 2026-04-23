@@ -32,6 +32,9 @@ from datetime import datetime, timezone
 from typing import Optional
 
 import requests
+
+# Module-level Session for connection pooling across scheduler job invocations
+_session = requests.Session()
 from sqlalchemy.orm import Session
 
 from services.api_key_rotator import get_api_football_key, mark_key_exhausted
@@ -98,7 +101,7 @@ def _api_get(endpoint: str, params: dict) -> Optional[dict]:
         url = f"{API_FOOTBALL_BASE}/{endpoint}"
 
         try:
-            resp = requests.get(url, headers=headers, params=params, timeout=15)
+            resp = _session.get(url, headers=headers, params=params, timeout=15)
         except requests.RequestException as exc:
             logger.error("API-Football request failed (%s %s): %s", endpoint, params, exc)
             return None
@@ -381,9 +384,18 @@ def refresh_injuries(db: Session, league_code: str) -> int:
         .all()
     )
 
+    # Batch-fetch all relevant players in a single query to avoid N+1 DB round-trips
+    if active_injuries:
+        injury_player_ids = {inj.player_id for inj in active_injuries}
+        players_by_id = {
+            p.id: p
+            for p in db.query(Player).filter(Player.id.in_(injury_player_ids)).all()
+        }
+    else:
+        players_by_id = {}
+
     for injury_record in active_injuries:
-        # Find the api_football_id for this player
-        player_row = db.query(Player).filter(Player.id == injury_record.player_id).first()
+        player_row = players_by_id.get(injury_record.player_id)
         if player_row and player_row.api_football_id not in currently_injured_api_ids:
             injury_record.is_active = False
             updated += 1

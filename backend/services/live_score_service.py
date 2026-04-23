@@ -28,7 +28,7 @@ Usage:
 
 import logging
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from threading import Thread, Event
 from typing import Optional
 
@@ -37,6 +37,11 @@ import requests
 from services.api_key_rotator import get_api_football_key, mark_key_exhausted
 
 logger = logging.getLogger(__name__)
+
+# Module-level Session for connection pooling. Shared across ESPN, FD.org,
+# and API-Football pollers so TCP connections are reused across the 10s/20s
+# cycles instead of churning fresh sockets every poll.
+_session = requests.Session()
 
 # Football-Data.org API
 API_BASE = "https://api.football-data.org/v4"
@@ -205,7 +210,7 @@ class LiveScoreService:
 
         try:
             # GET /v4/matches — returns today's matches across all competitions
-            resp = requests.get(
+            resp = _session.get(
                 f"{API_BASE}/matches",
                 headers=headers,
                 timeout=15,
@@ -313,7 +318,7 @@ class LiveScoreService:
 
         for espn_slug, db_league_code in ESPN_LEAGUES.items():
             try:
-                resp = requests.get(
+                resp = _session.get(
                     f"{ESPN_BASE}/{espn_slug}/scoreboard",
                     timeout=10,
                 )
@@ -442,7 +447,7 @@ class LiveScoreService:
 
         try:
             # Get all live fixtures in one call
-            resp = requests.get(
+            resp = _session.get(
                 "https://v3.football.api-sports.io/fixtures",
                 headers=headers,
                 params={"live": "all"},
@@ -458,7 +463,7 @@ class LiveScoreService:
                 except RuntimeError:
                     return
                 headers = {"x-apisports-key": key}
-                resp = requests.get(
+                resp = _session.get(
                     "https://v3.football.api-sports.io/fixtures",
                     headers=headers,
                     params={"live": "all"},
@@ -676,14 +681,49 @@ class LiveScoreService:
                         result = "D"
 
                     # Update match
-                    is_finished = live_match.get("status") == "FINISHED"
+                    reported_finished = live_match.get("status") == "FINISHED"
+                    was_completed = db_match.status == "completed"
+
+                    # Time guard: don't trust a FINISHED status from any source
+                    # unless at least 100 min have elapsed since kickoff (regulation
+                    # 90 min + ~10 min stoppage). Sources (especially FD.org) are
+                    # known to briefly/prematurely report FINISHED for still-live
+                    # games — that was the root cause of "Wrong" badges appearing
+                    # on games still in the 70th minute.
+                    past_full_time = False
+                    if db_match.kickoff_time and db_match.match_date:
+                        try:
+                            dh, dm = db_match.kickoff_time.split(":")
+                            kickoff_dt = datetime.combine(
+                                db_match.match_date,
+                                datetime.min.time(),
+                                tzinfo=timezone.utc,
+                            ).replace(hour=int(dh), minute=int(dm))
+                            past_full_time = (
+                                datetime.now(timezone.utc) - kickoff_dt
+                            ).total_seconds() >= 6000  # 100 min
+                        except (ValueError, AttributeError):
+                            past_full_time = False
+
+                    is_finished = reported_finished and past_full_time
+
                     db_match.home_goals = int(home_score)
                     db_match.away_goals = int(away_score)
                     db_match.result = result
-                    db_match.status = "completed" if is_finished else "live"
 
-                    # Evaluate predictions if finished
+                    # Guard: once a match is completed, don't let a conflicting
+                    # source (ESPN vs FD.org reporting different statuses for the
+                    # same match) revert it to 'live'. Only demote on first
+                    # transition or when we're certain the game is still in play.
                     if is_finished:
+                        db_match.status = "completed"
+                    elif not was_completed:
+                        db_match.status = "live"
+
+                    # Evaluate predictions only on the *transition* into completed.
+                    # Combined with the time guard above, this ensures the "Correct"/
+                    # "Wrong" badge only appears once the game has genuinely ended.
+                    if is_finished and not was_completed:
                         preds = db.query(Prediction).filter(
                             Prediction.match_id == db_match.id
                         ).all()
@@ -692,9 +732,118 @@ class LiveScoreService:
 
                     updated += 1
 
+                # --- Kickoff schedule corrections for TIMED/SCHEDULED matches ---
+                # ESPN/FD.org/API-Football may revise kickoff times (broadcast shifts,
+                # weather, etc). Propagate the authoritative UTC timestamp into the DB
+                # so match cards don't display stale times (e.g. West Ham vs Palace
+                # showing 1pm when actual kickoff is 12pm).
+                # Include TIMED/SCHEDULED (pre-match) AND live (game started earlier
+                # than the stored kickoff suggests — stale seed detected mid-game).
+                scheduled_cache = [
+                    m for m in cache_snapshot
+                    if m.get("status") in ("TIMED", "SCHEDULED", "IN_PLAY", "HALFTIME")
+                    and m.get("match_date")
+                ]
+                now_utc = datetime.now(timezone.utc)
+                for sched in scheduled_cache:
+                    home_name = sched.get("home_team", "")
+                    away_name = sched.get("away_team", "")
+                    home_id = _find_team(home_name)
+                    away_id = _find_team(away_name)
+                    if not home_id or not away_id:
+                        continue
+
+                    raw = sched.get("match_date")
+                    try:
+                        cache_dt = datetime.fromisoformat(
+                            str(raw).replace("Z", "+00:00")
+                        )
+                        if cache_dt.tzinfo is None:
+                            cache_dt = cache_dt.replace(tzinfo=timezone.utc)
+                        cache_dt = cache_dt.astimezone(timezone.utc)
+                    except (ValueError, AttributeError):
+                        continue
+
+                    cache_date = cache_dt.date()
+                    cache_kickoff = cache_dt.strftime("%H:%M")
+
+                    # Only touch near-term matches (avoids churn on far-future
+                    # fixtures where times routinely change)
+                    if cache_date < today - timedelta(days=1) or cache_date > today + timedelta(days=14):
+                        continue
+
+                    cache_is_live = sched.get("status") in ("IN_PLAY", "HALFTIME")
+
+                    # For scheduled matches find by scheduled status; for live
+                    # matches we also accept 'live' DB rows (stale seed correction)
+                    status_filter = ["scheduled"]
+                    if cache_is_live:
+                        status_filter.append("live")
+
+                    db_match = (
+                        db.query(Match)
+                        .filter(
+                            Match.home_team_id == home_id,
+                            Match.away_team_id == away_id,
+                            Match.status.in_(status_filter),
+                        )
+                        .order_by(Match.match_date.asc())
+                        .first()
+                    )
+                    if not db_match:
+                        continue
+
+                    # Parse stored kickoff for guard checks
+                    existing_dt = None
+                    if db_match.kickoff_time and db_match.match_date:
+                        try:
+                            dh, dm = db_match.kickoff_time.split(":")
+                            existing_dt = datetime.combine(
+                                db_match.match_date,
+                                datetime.min.time(),
+                                tzinfo=timezone.utc,
+                            ).replace(hour=int(dh), minute=int(dm))
+                        except (ValueError, AttributeError):
+                            pass
+
+                    if cache_is_live:
+                        # Stale-seed correction for live matches: only overwrite
+                        # if stored kickoff differs from cache by >10 min AND the
+                        # cache-reported kickoff is at least 5 min in the past
+                        # (match has actually started per the source).
+                        drift_ok = existing_dt is None or abs(
+                            (existing_dt - cache_dt).total_seconds()
+                        ) > 600
+                        started_ok = (now_utc - cache_dt).total_seconds() > 300
+                        if not (drift_ok and started_ok):
+                            continue
+                    else:
+                        # Pre-match: don't overwrite within 30 min of existing
+                        # kickoff (prevents flicker as the game is about to start).
+                        if existing_dt is not None and abs(
+                            (existing_dt - now_utc).total_seconds()
+                        ) < 1800:
+                            continue
+
+                    changed = False
+                    if db_match.match_date != cache_date:
+                        db_match.match_date = cache_date
+                        changed = True
+                    if db_match.kickoff_time != cache_kickoff:
+                        db_match.kickoff_time = cache_kickoff
+                        changed = True
+                    if changed:
+                        updated += 1
+                        logger.info(
+                            "Kickoff updated: match_id=%d %s vs %s -> %s %sZ (src=%s, was_live=%s)",
+                            db_match.id, home_name, away_name,
+                            cache_date, cache_kickoff,
+                            sched.get("source", "fdorg"),
+                            cache_is_live,
+                        )
+
                 # Also finalize any DB matches stuck as "live" that are no longer in cache
                 # (game ended, cache pruned, but DB never got the FINISHED status)
-                from datetime import timedelta
                 stale_live = (
                     db.query(Match)
                     .filter(

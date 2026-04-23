@@ -29,6 +29,11 @@ import xgboost as xgb
 import lightgbm as lgb
 import optuna
 
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
+from weighting import recency_weights  # noqa: E402
+from config import CLUB_FEATURES, INTL_FEATURES  # noqa: E402
+
 optuna.logging.set_verbosity(optuna.logging.WARNING)
 warnings.filterwarnings("ignore", category=UserWarning)
 
@@ -51,14 +56,26 @@ MODELS_DIR.mkdir(parents=True, exist_ok=True)
 
 # ---------------------------------------------------------------------------
 # Remote MLflow (from .env)
+#   Local dev:  MLFLOW_TRACKING_URI=http://localhost:5000  (via docker-compose)
+#   Production: MLFLOW_TRACKING_URI=http://<GCP_VM_IP>:5000 (or the new URL)
+# We intentionally don't hardcode a prod IP fallback — if the env var is
+# missing in a deploy, we want the run to fail loud rather than silently
+# log to a stale / wrong tracking server.
 # ---------------------------------------------------------------------------
-TRACKING_URI = os.getenv("MLFLOW_TRACKING_URI", "http://34.58.128.38:5000")
+TRACKING_URI = os.getenv("MLFLOW_TRACKING_URI")
+if not TRACKING_URI:
+    raise RuntimeError(
+        "MLFLOW_TRACKING_URI is not set. "
+        "Configure it in .env (local) or Cloud Run env vars (prod)."
+    )
 mlflow.set_tracking_uri(TRACKING_URI)
 
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
 RESULT_LABELS = ["H", "D", "A"]
+
+RECENCY_HALF_LIFE_YEARS = 3.0
 
 CLUB_TRAIN_END = "2022-06-01"
 CLUB_VAL_END = "2023-06-01"
@@ -68,54 +85,7 @@ INTL_TRAIN_END = "2020-01-01"
 INTL_VAL_END = "2022-01-01"
 INTL_TEST_END = "2024-01-01"
 
-CLUB_FEATURES = [
-    "home_win_rate_5", "home_draw_rate_5", "home_loss_rate_5",
-    "home_goals_scored_avg_5", "home_goals_conceded_avg_5",
-    "home_goal_diff_avg_5", "home_points_per_game_5",
-    "home_win_rate_10", "home_draw_rate_10", "home_loss_rate_10",
-    "home_goals_scored_avg_10", "home_goals_conceded_avg_10",
-    "home_goal_diff_avg_10", "home_points_per_game_10",
-    "home_clean_sheets_pct_10", "home_failed_to_score_pct_10",
-    "home_home_win_rate_5", "home_home_goals_scored_avg_5", "home_home_goals_conceded_avg_5",
-    "home_shots_avg_5", "home_shots_on_target_avg_5", "home_shot_accuracy_5",
-    "home_corners_avg_5", "home_yellow_cards_avg_5",
-    "away_win_rate_5", "away_draw_rate_5", "away_loss_rate_5",
-    "away_goals_scored_avg_5", "away_goals_conceded_avg_5",
-    "away_goal_diff_avg_5", "away_points_per_game_5",
-    "away_win_rate_10", "away_draw_rate_10", "away_loss_rate_10",
-    "away_goals_scored_avg_10", "away_goals_conceded_avg_10",
-    "away_goal_diff_avg_10", "away_points_per_game_10",
-    "away_clean_sheets_pct_10", "away_failed_to_score_pct_10",
-    "away_away_win_rate_5", "away_away_goals_scored_avg_5", "away_away_goals_conceded_avg_5",
-    "away_shots_avg_5", "away_shots_on_target_avg_5", "away_shot_accuracy_5",
-    "away_corners_avg_5", "away_yellow_cards_avg_5",
-    "h2h_home_wins", "h2h_draws", "h2h_away_wins",
-    "h2h_home_goals_avg", "h2h_away_goals_avg",
-    "days_since_last_match_home", "days_since_last_match_away", "rest_advantage",
-    "season_stage", "is_derby", "is_covid_era", "is_new_team_home", "is_new_team_away",
-    "form_diff_goals_scored", "form_diff_goals_conceded", "form_diff_points",
-    "attack_vs_defense", "defense_vs_attack",
-    "odds_home", "odds_draw", "odds_away",
-    "implied_prob_home", "implied_prob_draw", "implied_prob_away",
-]
-
-INTL_FEATURES = [
-    "home_win_rate_5", "home_draw_rate_5", "home_loss_rate_5",
-    "home_goals_scored_avg_5", "home_goals_conceded_avg_5",
-    "home_goal_diff_avg_5", "home_points_per_game_5",
-    "away_win_rate_5", "away_draw_rate_5", "away_loss_rate_5",
-    "away_goals_scored_avg_5", "away_goals_conceded_avg_5",
-    "away_goal_diff_avg_5", "away_points_per_game_5",
-    "fifa_rank_home", "fifa_rank_away", "rank_difference", "rank_points_diff",
-    "ranking_is_stale",
-    "is_neutral_venue", "tournament_type",
-    "confederation_home", "confederation_away", "same_confederation",
-    "world_cup_appearances_home", "world_cup_appearances_away",
-    "h2h_home_wins", "h2h_draws", "h2h_away_wins",
-    "h2h_home_goals_avg", "h2h_away_goals_avg",
-    "days_since_last_match_home", "days_since_last_match_away", "rest_advantage",
-    "form_diff_goals_scored", "form_diff_goals_conceded", "form_diff_points",
-]
+# Feature lists are imported from ml/src/config.py — single source of truth.
 
 
 # ---------------------------------------------------------------------------
@@ -213,6 +183,8 @@ def time_split(df, train_end, val_end, test_end, feature_cols, target_col="resul
     val_mask = (df["match_date"] >= train_end) & (df["match_date"] < val_end)
     test_mask = (df["match_date"] >= val_end) & (df["match_date"] < test_end)
 
+    train_dates = df.loc[train_mask, "match_date"]
+
     X_train = df.loc[train_mask, feature_cols].astype(float)
     X_val = df.loc[val_mask, feature_cols].astype(float)
     X_test = df.loc[test_mask, feature_cols].astype(float)
@@ -220,35 +192,37 @@ def time_split(df, train_end, val_end, test_end, feature_cols, target_col="resul
     y_val = df.loc[val_mask, target_col].astype(int)
     y_test = df.loc[test_mask, target_col].astype(int)
 
-    return X_train, X_val, X_test, y_train, y_val, y_test
+    return X_train, X_val, X_test, y_train, y_val, y_test, train_dates
 
 
 # ---------------------------------------------------------------------------
 # Model training functions
 # ---------------------------------------------------------------------------
-def train_logistic_regression(X_train, y_train, X_val, y_val):
+def train_logistic_regression(X_train, y_train, X_val, y_val, sample_weight=None):
     scaler = StandardScaler()
     X_train_scaled = scaler.fit_transform(X_train)
     X_val_scaled = scaler.transform(X_val)
     model = LogisticRegression(max_iter=1000, multi_class="multinomial", solver="lbfgs", random_state=42, C=1.0)
-    model.fit(X_train_scaled, y_train)
+    model.fit(X_train_scaled, y_train, sample_weight=sample_weight)
     y_prob_val = model.predict_proba(X_val_scaled)
     y_pred_val = model.predict(X_val_scaled)
     metrics = compute_all_metrics(y_val.values, y_prob_val)
-    mlflow.log_params({"model_type": "logistic_regression", "C": 1.0, "max_iter": 1000})
+    mlflow.log_params({"model_type": "logistic_regression", "C": 1.0, "max_iter": 1000,
+                       "recency_half_life_years": RECENCY_HALF_LIFE_YEARS})
     _log_metrics(metrics, prefix="val_")
     log_confusion_matrix(y_val.values, y_pred_val)
     logger.info("LR - val log_loss: %.4f, accuracy: %.4f", metrics["log_loss"], metrics["accuracy"])
     return {"model": model, "scaler": scaler, **metrics}
 
 
-def train_random_forest(X_train, y_train, X_val, y_val):
+def train_random_forest(X_train, y_train, X_val, y_val, sample_weight=None):
     model = RandomForestClassifier(n_estimators=300, max_depth=12, min_samples_split=10, min_samples_leaf=5, random_state=42, n_jobs=2)
-    model.fit(X_train, y_train)
+    model.fit(X_train, y_train, sample_weight=sample_weight)
     y_prob_val = model.predict_proba(X_val)
     y_pred_val = model.predict(X_val)
     metrics = compute_all_metrics(y_val.values, y_prob_val)
-    mlflow.log_params({"model_type": "random_forest", "n_estimators": 300, "max_depth": 12})
+    mlflow.log_params({"model_type": "random_forest", "n_estimators": 300, "max_depth": 12,
+                       "recency_half_life_years": RECENCY_HALF_LIFE_YEARS})
     _log_metrics(metrics, prefix="val_")
     log_confusion_matrix(y_val.values, y_pred_val)
     log_feature_importance(model, list(X_train.columns), model_type="random_forest")
@@ -256,7 +230,7 @@ def train_random_forest(X_train, y_train, X_val, y_val):
     return {"model": model, **metrics}
 
 
-def train_xgboost_with_optuna(X_train, y_train, X_val, y_val, n_trials=10):
+def train_xgboost_with_optuna(X_train, y_train, X_val, y_val, n_trials=10, sample_weight=None):
     def objective(trial):
         params = {
             "objective": "multi:softprob", "num_class": 3, "eval_metric": "mlogloss",
@@ -272,7 +246,7 @@ def train_xgboost_with_optuna(X_train, y_train, X_val, y_val, n_trials=10):
             "reg_lambda": trial.suggest_float("reg_lambda", 1e-8, 10.0, log=True),
         }
         model = xgb.XGBClassifier(**params)
-        model.fit(X_train, y_train, eval_set=[(X_val, y_val)], verbose=False)
+        model.fit(X_train, y_train, sample_weight=sample_weight, eval_set=[(X_val, y_val)], verbose=False)
         y_prob = model.predict_proba(X_val)
         return log_loss(y_val, y_prob, labels=[0, 1, 2])
 
@@ -283,16 +257,17 @@ def train_xgboost_with_optuna(X_train, y_train, X_val, y_val, n_trials=10):
     best_params.update({"objective": "multi:softprob", "num_class": 3, "eval_metric": "mlogloss",
                         "tree_method": "hist", "random_state": 42, "n_jobs": 2, "verbosity": 0})
     best_model = xgb.XGBClassifier(**best_params)
-    best_model.fit(X_train, y_train, eval_set=[(X_val, y_val)], verbose=False)
+    best_model.fit(X_train, y_train, sample_weight=sample_weight, eval_set=[(X_val, y_val)], verbose=False)
 
     mlflow.log_params({f"xgb_{k}": v for k, v in study.best_params.items()})
+    mlflow.log_param("recency_half_life_years", RECENCY_HALF_LIFE_YEARS)
     mlflow.log_metric("optuna_best_val_logloss", study.best_value)
     mlflow.log_metric("optuna_n_trials", n_trials)
     logger.info("XGBoost Optuna - best val log_loss: %.4f after %d trials", study.best_value, n_trials)
     return best_model, best_params, study.best_value
 
 
-def train_lightgbm_with_optuna(X_train, y_train, X_val, y_val, n_trials=10):
+def train_lightgbm_with_optuna(X_train, y_train, X_val, y_val, n_trials=10, sample_weight=None):
     def objective(trial):
         params = {
             "objective": "multiclass", "num_class": 3, "metric": "multi_logloss",
@@ -308,7 +283,7 @@ def train_lightgbm_with_optuna(X_train, y_train, X_val, y_val, n_trials=10):
             "num_leaves": trial.suggest_int("num_leaves", 15, 127),
         }
         model = lgb.LGBMClassifier(**params)
-        model.fit(X_train, y_train, eval_set=[(X_val, y_val)])
+        model.fit(X_train, y_train, sample_weight=sample_weight, eval_set=[(X_val, y_val)])
         y_prob = model.predict_proba(X_val)
         return log_loss(y_val, y_prob, labels=[0, 1, 2])
 
@@ -319,9 +294,10 @@ def train_lightgbm_with_optuna(X_train, y_train, X_val, y_val, n_trials=10):
     best_params.update({"objective": "multiclass", "num_class": 3, "metric": "multi_logloss",
                         "verbosity": -1, "random_state": 42, "n_jobs": 2})
     best_model = lgb.LGBMClassifier(**best_params)
-    best_model.fit(X_train, y_train, eval_set=[(X_val, y_val)])
+    best_model.fit(X_train, y_train, sample_weight=sample_weight, eval_set=[(X_val, y_val)])
 
     mlflow.log_params({f"lgb_{k}": v for k, v in study.best_params.items()})
+    mlflow.log_param("recency_half_life_years", RECENCY_HALF_LIFE_YEARS)
     mlflow.log_metric("optuna_best_val_logloss", study.best_value)
     logger.info("LightGBM Optuna - best val log_loss: %.4f after %d trials", study.best_value, n_trials)
     return best_model, best_params, study.best_value
@@ -371,11 +347,18 @@ def run_training(model_type="club", n_trials=10):
         logger.warning("Missing %d features (will use available): %s", len(missing), missing)
     feature_cols = available_features
 
-    X_train, X_val, X_test, y_train, y_val, y_test = time_split(df, train_end, val_end, test_end, feature_cols)
+    X_train, X_val, X_test, y_train, y_val, y_test, train_dates = time_split(
+        df, train_end, val_end, test_end, feature_cols
+    )
     logger.info("Data split: train=%d, val=%d, test=%d", len(X_train), len(X_val), len(X_test))
 
     if len(X_train) == 0:
         raise ValueError("Empty training set. Check date splits.")
+
+    sample_weight_train = recency_weights(train_dates, RECENCY_HALF_LIFE_YEARS)
+    logger.info("Recency weights (half-life=%.1fy): min=%.3f median=%.3f max=%.3f",
+                RECENCY_HALF_LIFE_YEARS, float(sample_weight_train.min()),
+                float(np.median(sample_weight_train)), float(sample_weight_train.max()))
 
     mlflow.set_experiment(experiment_name)
     results = {}
@@ -383,7 +366,7 @@ def run_training(model_type="club", n_trials=10):
 
     # 1. Logistic Regression
     with mlflow.start_run(run_name="logistic_regression") as run:
-        lr_result = train_logistic_regression(X_train, y_train, X_val, y_val)
+        lr_result = train_logistic_regression(X_train, y_train, X_val, y_val, sample_weight=sample_weight_train)
         if has_test:
             lr_test = evaluate_on_test(lr_result["model"], X_test, y_test, "logistic_regression")
         else:
@@ -392,7 +375,7 @@ def run_training(model_type="club", n_trials=10):
 
     # 2. Random Forest
     with mlflow.start_run(run_name="random_forest") as run:
-        rf_result = train_random_forest(X_train, y_train, X_val, y_val)
+        rf_result = train_random_forest(X_train, y_train, X_val, y_val, sample_weight=sample_weight_train)
         if has_test:
             rf_test = evaluate_on_test(rf_result["model"], X_test, y_test, "random_forest")
         else:
@@ -401,7 +384,9 @@ def run_training(model_type="club", n_trials=10):
 
     # 3. XGBoost with Optuna
     with mlflow.start_run(run_name="xgboost_optuna") as run:
-        xgb_model, xgb_params, _ = train_xgboost_with_optuna(X_train, y_train, X_val, y_val, n_trials=n_trials)
+        xgb_model, xgb_params, _ = train_xgboost_with_optuna(
+            X_train, y_train, X_val, y_val, n_trials=n_trials, sample_weight=sample_weight_train
+        )
         if has_test:
             xgb_test = evaluate_on_test(xgb_model, X_test, y_test, "xgboost")
         else:
@@ -411,7 +396,9 @@ def run_training(model_type="club", n_trials=10):
 
     # 4. LightGBM with Optuna
     with mlflow.start_run(run_name="lightgbm_optuna") as run:
-        lgb_model, lgb_params, _ = train_lightgbm_with_optuna(X_train, y_train, X_val, y_val, n_trials=n_trials)
+        lgb_model, lgb_params, _ = train_lightgbm_with_optuna(
+            X_train, y_train, X_val, y_val, n_trials=n_trials, sample_weight=sample_weight_train
+        )
         if has_test:
             lgb_test = evaluate_on_test(lgb_model, X_test, y_test, "lightgbm")
         else:

@@ -87,7 +87,10 @@ export default function MatchCard({ match }) {
 
         {/* Teams row with score */}
         <div className="flex items-center justify-between mb-4">
-          <div className="flex-1 min-w-0">
+          <div className="flex-1 min-w-0 flex items-center gap-1.5">
+            {match.home_team_crest && (
+              <img src={match.home_team_crest} alt="" className="w-5 h-5 flex-shrink-0" loading="lazy" />
+            )}
             <p className={`text-sm font-semibold truncate ${
               isCompleted && match.result === 'H' ? 'text-accent-green' :
               !isCompleted && pred?.predicted_result === 'H' ? 'text-accent-green' :
@@ -118,7 +121,7 @@ export default function MatchCard({ match }) {
             </span>
           )}
 
-          <div className="flex-1 min-w-0 text-right">
+          <div className="flex-1 min-w-0 flex items-center gap-1.5 justify-end">
             <p className={`text-sm font-semibold truncate ${
               isCompleted && match.result === 'A' ? 'text-accent-green' :
               !isCompleted && pred?.predicted_result === 'A' ? 'text-accent-red' :
@@ -127,6 +130,9 @@ export default function MatchCard({ match }) {
             }`}>
               {match.away_team_name}
             </p>
+            {match.away_team_crest && (
+              <img src={match.away_team_crest} alt="" className="w-5 h-5 flex-shrink-0" loading="lazy" />
+            )}
           </div>
         </div>
 
@@ -160,6 +166,15 @@ export default function MatchCard({ match }) {
             predictedResult={pred.predicted_result}
             size="sm"
           />
+        )}
+
+        {/* Bookmaker odds row — only shown when odds have been stamped by odds_service */}
+        {pred && pred.odds_home != null && pred.odds_draw != null && pred.odds_away != null && (
+          <div className="flex items-center justify-between mt-2 px-2 py-1 rounded-md bg-white/[0.02] text-[10px] text-foreground-muted text-tabular">
+            <span>H <span className="text-foreground">{pred.odds_home.toFixed(2)}</span></span>
+            <span>D <span className="text-foreground">{pred.odds_draw.toFixed(2)}</span></span>
+            <span>A <span className="text-foreground">{pred.odds_away.toFixed(2)}</span></span>
+          </div>
         )}
 
         {/* Completed match without prediction */}

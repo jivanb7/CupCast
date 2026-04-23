@@ -19,6 +19,9 @@ from sqlalchemy.orm import Session
 
 logger = logging.getLogger(__name__)
 
+# Module-level Session for connection pooling across scheduler job invocations
+_session = requests.Session()
+
 # API-Football base URL
 API_FOOTBALL_BASE = "https://v3.football.api-sports.io"
 
@@ -74,7 +77,7 @@ def _make_api_football_request(
         headers = {"x-apisports-key": key}
         try:
             time.sleep(REQUEST_DELAY)
-            resp = requests.get(url, headers=headers, params=params, timeout=timeout)
+            resp = _session.get(url, headers=headers, params=params, timeout=timeout)
         except requests.RequestException as exc:
             logger.error("UCL API request failed (%s): %s", url, exc)
             return None

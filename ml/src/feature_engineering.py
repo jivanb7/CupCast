@@ -544,6 +544,61 @@ def compute_intl_features(
     return result
 
 
+def add_injury_features(
+    df: pd.DataFrame,
+    injuries_path: str | None = None,
+) -> pd.DataFrame:
+    """Merge per-team active/key-active injury counts onto the feature frame.
+
+    Expects `df` to contain `home_team_id` and `away_team_id`. If either the
+    injuries parquet or the team-id columns are missing, falls back to zero
+    columns so the downstream feature list stays aligned.
+    """
+    from pathlib import Path as _Path
+
+    out_cols = ["home_active_injuries", "away_active_injuries",
+                "home_key_injuries", "away_key_injuries"]
+
+    path = _Path(injuries_path) if injuries_path else (
+        PROCESSED_DIR / "team_injuries.parquet"
+    )
+
+    if not path.exists():
+        logger.warning("Injuries parquet not found at %s — filling zero columns", path)
+        for c in out_cols:
+            df[c] = 0
+        return df
+
+    if "home_team_id" not in df.columns or "away_team_id" not in df.columns:
+        logger.warning("home_team_id/away_team_id not in feature frame — filling zero injury columns")
+        for c in out_cols:
+            df[c] = 0
+        return df
+
+    inj = pd.read_parquet(path)[
+        ["team_id", "active_injuries", "key_active_injuries"]
+    ]
+
+    home = inj.rename(columns={
+        "team_id": "home_team_id",
+        "active_injuries": "home_active_injuries",
+        "key_active_injuries": "home_key_injuries",
+    })
+    away = inj.rename(columns={
+        "team_id": "away_team_id",
+        "active_injuries": "away_active_injuries",
+        "key_active_injuries": "away_key_injuries",
+    })
+
+    df = df.merge(home, on="home_team_id", how="left")
+    df = df.merge(away, on="away_team_id", how="left")
+
+    for c in out_cols:
+        df[c] = df[c].fillna(0).astype(int)
+
+    return df
+
+
 def _compute_derived_features(features_df: pd.DataFrame) -> pd.DataFrame:
     """Compute interaction / derived features from existing columns."""
     df = features_df.copy()
@@ -641,6 +696,10 @@ def build_feature_matrix(
     features = df[["match_idx", "match_date", "home_team", "away_team", "result_encoded"]].copy()
     if "league_code" in df.columns:
         features["league_code"] = df["league_code"]
+    # Carry team ids through so injury features can merge on them
+    for _idcol in ("home_team_id", "away_team_id"):
+        if _idcol in df.columns:
+            features[_idcol] = df[_idcol].values
 
     features = features.merge(form, on="match_idx", how="left")
     features = features.merge(context, on="match_idx", how="left")
@@ -673,6 +732,9 @@ def build_feature_matrix(
             odds_data["implied_prob_away"] = raw_a / total
             features = features.merge(odds_data, on="match_idx", how="left")
 
+        # 7. Injury features (team-level snapshot)
+        features = add_injury_features(features)
+
         # Impute and select final columns
         features = impute_missing_features(features)
 
@@ -699,6 +761,9 @@ def build_feature_matrix(
 
         # Derived features
         features = _compute_derived_features(features)
+
+        # Injury features (team-level snapshot)
+        features = add_injury_features(features)
 
         # Impute
         features = impute_missing_features(features)

@@ -26,6 +26,9 @@ from sqlalchemy.orm import Session
 
 logger = logging.getLogger(__name__)
 
+# Module-level Session for connection pooling across scheduler job invocations
+_session = requests.Session()
+
 # Football-Data.org competition codes → our DB league codes
 FDORG_COMPETITIONS = {
     "PL": "epl",
@@ -51,14 +54,12 @@ FDUK_FIXTURES_URL = "https://www.football-data.co.uk/fixtures.csv"
 def _get_fdorg_key() -> Optional[str]:
     key = os.environ.get("FOOTBALL_DATA_ORG_API_KEY", "")
     if not key:
-        # Try backend .env
-        from pathlib import Path
-        env_path = Path(__file__).resolve().parent.parent / ".env"
-        if env_path.exists():
-            for line in env_path.read_text().splitlines():
-                if line.startswith("FOOTBALL_DATA_ORG_API_KEY="):
-                    key = line.split("=", 1)[1].strip()
-                    break
+        # Fall back to pydantic Settings (which loads saas/.env automatically)
+        try:
+            from config import settings
+            key = settings.football_data_org_api_key or ""
+        except Exception:
+            pass
     return key or None
 
 
@@ -155,7 +156,7 @@ def seed_from_football_data_org(db: Session) -> dict:
             continue
 
         try:
-            resp = requests.get(
+            resp = _session.get(
                 f"{FDORG_BASE}/competitions/{comp_code}/matches",
                 headers=headers,
                 params={"status": "SCHEDULED"},
@@ -164,7 +165,7 @@ def seed_from_football_data_org(db: Session) -> dict:
             if resp.status_code == 429:
                 logger.warning("Rate limited on %s — sleeping 30s", comp_code)
                 time.sleep(30)
-                resp = requests.get(
+                resp = _session.get(
                     f"{FDORG_BASE}/competitions/{comp_code}/matches",
                     headers=headers,
                     params={"status": "SCHEDULED"},
