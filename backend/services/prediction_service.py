@@ -393,4 +393,16 @@ def generate_batch_predictions(db) -> int:
         raise
 
     logger.info("Generated %d predictions, skipped %d (batch mode)", count, skipped)
+
+    # If every eligible match got skipped we have a systemic problem (missing
+    # dependency, bad model, broken features) — not per-match flakiness. Raise
+    # so the admin endpoint surfaces it as 500 instead of returning
+    # {"status":"done","predictions_generated":0} and masking the real issue.
+    eligible = len(match_index_map)
+    if eligible > 0 and count == 0:
+        raise RuntimeError(
+            f"prediction generation produced 0 predictions across {eligible} eligible matches — "
+            "likely a systemic failure (check logs for repeated 'Failed to predict match' lines)"
+        )
+
     return count
