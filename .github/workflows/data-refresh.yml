@@ -7,8 +7,12 @@
 #   2. Process and update database
 #   3. Re-run feature engineering
 #   4. Retrain models (both club and international)
-#   5. If new model outperforms production → promote in MLFlow registry
-#   6. Regenerate predictions for upcoming matches
+#   5. Run the promotion gate: register the new training run as a new
+#      version, compare val_log_loss against the current @prod version,
+#      and flip the @prod alias only if new is at least 1% better. This
+#      prevents a noisy retrain from silently degrading serving quality.
+#   6. Regenerate predictions for upcoming matches against the (possibly
+#      updated) prod model.
 #
 # NOTE: This job runs for 30-60+ minutes. Timeout set to 90 minutes.
 # If the job fails partway, re-run from the last successful step using
@@ -31,6 +35,11 @@ on:
           - data-only
           - predict-only
           - train-only
+      promote_margin:
+        description: "Required relative improvement to promote (e.g. 0.01 = 1%)"
+        required: false
+        default: "0.01"
+        type: string
 
 jobs:
   refresh:
@@ -53,12 +62,18 @@ jobs:
           echo '{"username":"${{ secrets.KAGGLE_USERNAME }}","key":"${{ secrets.KAGGLE_KEY }}"}' > ~/.kaggle/kaggle.json
           chmod 600 ~/.kaggle/kaggle.json
 
-      - name: Run pipeline
+      - name: Run pipeline (ingest → process → features → train)
+        id: pipeline
         run: |
           python ml/run_pipeline.py --mode ${{ github.event.inputs.mode || 'full' }}
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           MLFLOW_TRACKING_URI: ${{ secrets.MLFLOW_TRACKING_URI }}
+          # MLflow client reads these for basic auth against the Caddy-fronted
+          # tracking server — without them, create_model_version/set_alias
+          # return 401 and the gate step will hard-fail.
+          MLFLOW_TRACKING_USERNAME: ${{ secrets.MLFLOW_TRACKING_USERNAME }}
+          MLFLOW_TRACKING_PASSWORD: ${{ secrets.MLFLOW_TRACKING_PASSWORD }}
           KAGGLE_USERNAME: ${{ secrets.KAGGLE_USERNAME }}
           KAGGLE_KEY: ${{ secrets.KAGGLE_KEY }}
           FOOTBALL_DATA_ORG_API_KEY: ${{ secrets.FOOTBALL_DATA_ORG_API_KEY }}
@@ -66,8 +81,56 @@ jobs:
           API_FOOTBALL_KEYS: ${{ secrets.API_FOOTBALL_KEYS }}
           PYTHONPATH: .
 
+      # Promotion gate runs only when training actually happened. A 'data-only'
+      # or 'predict-only' manual run should skip it — nothing new to promote.
+      - name: Promote new club model if better (val_log_loss)
+        if: ${{ github.event.inputs.mode == null || github.event.inputs.mode == 'full' || github.event.inputs.mode == 'train-only' }}
+        run: |
+          python scripts/promote_if_better.py \
+            --model-type club \
+            --metric val_log_loss \
+            --margin ${{ github.event.inputs.promote_margin || '0.01' }}
+        env:
+          MLFLOW_TRACKING_URI: ${{ secrets.MLFLOW_TRACKING_URI }}
+          MLFLOW_TRACKING_USERNAME: ${{ secrets.MLFLOW_TRACKING_USERNAME }}
+          MLFLOW_TRACKING_PASSWORD: ${{ secrets.MLFLOW_TRACKING_PASSWORD }}
+          PYTHONPATH: .
+
+      - name: Promote new international model if better (val_log_loss)
+        if: ${{ github.event.inputs.mode == null || github.event.inputs.mode == 'full' || github.event.inputs.mode == 'train-only' }}
+        run: |
+          python scripts/promote_if_better.py \
+            --model-type intl \
+            --metric val_log_loss \
+            --margin ${{ github.event.inputs.promote_margin || '0.01' }}
+        env:
+          MLFLOW_TRACKING_URI: ${{ secrets.MLFLOW_TRACKING_URI }}
+          MLFLOW_TRACKING_USERNAME: ${{ secrets.MLFLOW_TRACKING_USERNAME }}
+          MLFLOW_TRACKING_PASSWORD: ${{ secrets.MLFLOW_TRACKING_PASSWORD }}
+          PYTHONPATH: .
+
+      # Kick the backend to regenerate predictions against whatever @prod
+      # resolves to now. The backend model cache is lazy + rebuilt on each
+      # cold start, so newly promoted weights are served by the next request;
+      # this step just ensures upcoming-match predictions reflect them
+      # immediately rather than on the next scheduled prediction run.
+      - name: Regenerate predictions on Cloud Run
+        if: ${{ github.event.inputs.mode == null || github.event.inputs.mode == 'full' || github.event.inputs.mode == 'train-only' || github.event.inputs.mode == 'predict-only' }}
+        run: |
+          set -e
+          backend="${{ secrets.BACKEND_URL }}"
+          if [ -z "$backend" ]; then
+            echo "BACKEND_URL secret missing; skipping prod-side regeneration." >&2
+            exit 0
+          fi
+          curl -fsS -X POST \
+            -H "X-Admin-Key: ${{ secrets.ADMIN_API_KEY }}" \
+            -H "Content-Type: application/json" \
+            --max-time 480 \
+            "$backend/api/v1/admin/predictions/generate"
+
       - name: Notify on failure
         if: failure()
         run: |
-          echo "Data refresh pipeline FAILED. Check logs."
+          echo "Data refresh / retrain pipeline FAILED. Check logs."
           # TODO (devops-engineer): add Slack webhook notification here
