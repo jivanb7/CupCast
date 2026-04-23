@@ -42,16 +42,21 @@ logger = logging.getLogger(__name__)
 # reads/writes _club_model, _club_top5_model, _intl_model, _club_matches_df.
 _cache_lock = threading.Lock()
 
-# Add project root to sys.path so we can import ml.src modules with full package path
-PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent  # cupcast/
+# Locate the `ml` package directory. Two supported layouts:
+#   * Local dev:   cupcast/backend/services/prediction_service.py  → project root is parents[2]
+#   * Cloud Run:   /app/services/prediction_service.py             → /app is parents[1]
+# Walk upward from __file__ until we find a directory containing `ml/src/config.py`.
+_PKG_CANDIDATE = next(
+    (p for p in Path(__file__).resolve().parents if (p / "ml" / "src" / "config.py").is_file()),
+    None,
+)
+if _PKG_CANDIDATE is None:
+    raise RuntimeError("Could not locate the `ml` package relative to prediction_service.py")
+PROJECT_ROOT = _PKG_CANDIDATE
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
-ML_DIR = PROJECT_ROOT / "ml"
 
-# Historical match data still lives on disk (rebuilt by the data pipeline).
-# Only model weights moved to GCS — feature engineering inputs are per-deploy
-# artifacts, small enough to bake into the container image.
-PROCESSED_DIR = ML_DIR / "data" / "processed"
+from ml.src.config import ML_DIR, PROCESSED_DIR  # noqa: E402
 
 # Map backend DB league codes → ML pipeline league codes
 DB_TO_ML_LEAGUE = {

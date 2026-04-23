@@ -169,11 +169,19 @@ def _find_or_resolve_team(db: Session, api_team_name: str, api_team_id: int) -> 
     except Exception:
         pass
 
-    # Try the team_name_mapping module (same logic as UCL fixture service)
+    # Try the team_name_mapping module (same logic as UCL fixture service).
+    # Walk up from __file__ until we find `ml/src/team_name_mapping.py` — this
+    # works for both the local layout and the flattened Cloud Run image layout.
     try:
         import sys
         from pathlib import Path
-        ml_src = Path(__file__).resolve().parents[3] / "ml" / "src"
+        ml_src = next(
+            (p / "ml" / "src" for p in Path(__file__).resolve().parents
+             if (p / "ml" / "src" / "team_name_mapping.py").is_file()),
+            None,
+        )
+        if ml_src is None:
+            raise ImportError("team_name_mapping.py not found on any ancestor path")
         if str(ml_src) not in sys.path:
             sys.path.insert(0, str(ml_src))
         from team_name_mapping import resolve_team_name

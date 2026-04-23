@@ -21,8 +21,17 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-ML_PIPELINE_SCRIPT = Path(__file__).resolve().parent.parent.parent / "ml" / "run_pipeline.py"
-PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+# Walk upward from __file__ until we find the `ml/` package directory. Works for
+# both local layout (cupcast/backend/services/…) and the Cloud Run image layout
+# (/app/services/… with /app/ml/ alongside), where a fixed `.parent.parent.parent`
+# would resolve to `/` and `ml/run_pipeline.py` would appear missing.
+PROJECT_ROOT = next(
+    (p for p in Path(__file__).resolve().parents if (p / "ml" / "run_pipeline.py").is_file()),
+    None,
+)
+if PROJECT_ROOT is None:
+    raise RuntimeError("Could not locate `ml/run_pipeline.py` relative to data_service.py")
+ML_PIPELINE_SCRIPT = PROJECT_ROOT / "ml" / "run_pipeline.py"
 
 
 def _run_pipeline(args: list[str], timeout: int = 3600) -> bool:

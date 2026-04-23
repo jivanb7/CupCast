@@ -18,9 +18,12 @@ Endpoints:
              the tournament (computed from FIFA ranking points).
 """
 
+import logging
 import sys
 from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
@@ -30,11 +33,20 @@ from models.fifa_ranking import FifaRanking
 from models.match import Match
 from models.team import Team
 
-# Import WC group assignments from ml config
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "ml"))
+# Import WC group assignments from ml config. Walk upward to find the ml
+# package so this works in both the local repo layout (cupcast/backend/api/…)
+# and the Cloud Run image layout (/app/api/… with /app/ml/ alongside).
+_ml_dir = next(
+    (p / "ml" for p in Path(__file__).resolve().parents
+     if (p / "ml" / "src" / "config.py").is_file()),
+    None,
+)
+if _ml_dir is not None and str(_ml_dir) not in sys.path:
+    sys.path.insert(0, str(_ml_dir))
 try:
     from src.config import WORLD_CUP_2026_GROUPS
 except ImportError:
+    logger.warning("worldcup groups unavailable — ml/src/config.py not importable")
     WORLD_CUP_2026_GROUPS = {}
 
 router = APIRouter(prefix="/worldcup", tags=["worldcup"])
