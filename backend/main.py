@@ -40,6 +40,7 @@ from api.predictions import router as predictions_router
 from api.leagues import router as leagues_router
 from api.teams import router as teams_router
 from api.worldcup import router as worldcup_router
+from api.world_cup import router as world_cup_router
 from api.model_perf import router as model_perf_router
 from api.admin import router as admin_router
 from api.live import router as live_router
@@ -61,8 +62,23 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error("Database initialization failed: %s — server starting with degraded DB", e)
 
-    # Security warning for default admin key
+    # Export MLflow credentials from settings (.env) into os.environ.
+    # MLflow's client reads tracking URI / username / password directly from
+    # os.environ, NOT from the Settings object — so without this hop,
+    # local dev relying on a .env file silently falls back to defaults
+    # and `mlflow.load_model()` fails with auth or "model not found" errors.
+    # Cloud Run sets these as container env vars directly, so this is a no-op
+    # in production but a real fix for any environment that uses .env.
+    import os as _os
     from config import settings as _settings
+    _os.environ.setdefault("MLFLOW_TRACKING_URI", _settings.mlflow_tracking_uri)
+    if _settings.mlflow_tracking_username:
+        _os.environ.setdefault("MLFLOW_TRACKING_USERNAME", _settings.mlflow_tracking_username)
+    if _settings.mlflow_tracking_password:
+        _os.environ.setdefault("MLFLOW_TRACKING_PASSWORD", _settings.mlflow_tracking_password)
+    logger.info("MLflow tracking URI configured: %s", _settings.mlflow_tracking_uri)
+
+    # Security warning for default admin key
     if _settings.admin_api_key == "changeme":
         logger.warning("SECURITY: admin_api_key is set to default 'changeme' — set ADMIN_API_KEY in .env for production")
 
@@ -226,6 +242,7 @@ app.include_router(predictions_router, prefix="/api/v1")
 app.include_router(leagues_router, prefix="/api/v1")
 app.include_router(teams_router, prefix="/api/v1")
 app.include_router(worldcup_router, prefix="/api/v1")
+app.include_router(world_cup_router, prefix="/api/v1")
 app.include_router(model_perf_router, prefix="/api/v1")
 app.include_router(admin_router, prefix="/api/v1")
 app.include_router(live_router, prefix="/api/v1")
