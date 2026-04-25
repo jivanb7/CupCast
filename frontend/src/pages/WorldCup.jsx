@@ -13,7 +13,6 @@ import TitleContenders from '../components/worldcup/TitleContenders'
 import PredictedWinnerBlock from '../components/worldcup/PredictedWinnerBlock'
 import GroupCard from '../components/worldcup/GroupCard'
 import OpeningMatchPrediction from '../components/worldcup/OpeningMatchPrediction'
-import BracketTeaser from '../components/worldcup/BracketTeaser'
 import FeaturedPrediction from '../components/match/FeaturedPrediction'
 import LoadingSpinner from '../components/ui/LoadingSpinner'
 import Tabs, { TabPanel } from '../components/ui/Tabs'
@@ -274,10 +273,6 @@ export default function WorldCup() {
                 champion={champion}
                 topContenderStats={contenders}
               />
-            </SectionBoundary>
-
-            <SectionBoundary label="Bracket teaser">
-              <BracketTeaser champion={champion} />
             </SectionBoundary>
 
             <SectionBoundary label="Title contenders">
