@@ -89,6 +89,30 @@ LOOKAHEAD_OVERRIDES = {
     "fifa.world": 120,
 }
 
+# Map ESPN season.slug (scoreboard) → our stage enum. season.slug is the most
+# reliable stage signal in the scoreboard payload: it's populated on every
+# event we've seen (group-stage, round-of-32, round-of-16, quarterfinals, etc.)
+# and does not require a second API call.
+_ESPN_SLUG_TO_STAGE = {
+    "group-stage": "group",
+    "round-of-32": "r32",
+    "round-of-16": "r16",
+    "quarterfinals": "qf",
+    "quarter-finals": "qf",
+    "semifinals": "sf",
+    "semi-finals": "sf",
+    "third-place": "3rd-place",
+    "3rd-place-match": "3rd-place",
+    "final": "final",
+}
+
+# The scoreboard payload does NOT carry the group letter for individual events.
+# To get "Group A" we must hit /summary?event=<id>, which exposes
+# header.competitions[0].competitors[*].groups.abbreviation. We only do this
+# for group-stage matches we're about to insert — knockout events have no group
+# and existing rows are skipped, so steady-state cost is ~zero.
+_ESPN_SUMMARY_URL = f"{ESPN_BASE}/{{slug}}/summary"
+
 
 def _current_season_str() -> str:
     # Same format as fixture_seeder._current_season_str.
@@ -114,6 +138,76 @@ def _fetch_scoreboard(slug: str, start: date, end: date) -> list[dict]:
     except Exception as e:
         logger.warning("ESPN fetch failed for %s: %s", slug, e)
         return []
+
+
+def _extract_stage(event: dict) -> Optional[str]:
+    """Map an ESPN scoreboard event to our stage enum.
+
+    Primary signal: `season.slug` (e.g. "group-stage", "round-of-32"). We also
+    fall back to parsing the event name for the knockout slug patterns ESPN
+    occasionally varies (e.g. a "Final" event whose slug still reads "finals").
+
+    Returns None for unrecognized formats; caller logs a warning so we catch
+    novel stage names as ESPN adds them.
+    """
+    slug = ((event.get("season") or {}).get("slug") or "").strip().lower()
+    if slug in _ESPN_SLUG_TO_STAGE:
+        return _ESPN_SLUG_TO_STAGE[slug]
+
+    # Fallback: scan event.name. Order matters — "Semifinal" contains "Final".
+    name = (event.get("name") or "").lower()
+    if "3rd place" in name or "third place" in name:
+        return "3rd-place"
+    if "semifinal" in name or "semi-final" in name:
+        return "sf"
+    if "quarterfinal" in name or "quarter-final" in name:
+        return "qf"
+    if "round of 16" in name:
+        return "r16"
+    if "round of 32" in name:
+        return "r32"
+    if "group" in name:  # e.g. "Group A 2nd Place at Group B Winner" shouldn't hit here; group-stage events use season.slug
+        return None
+    if "final" in name:
+        return "final"
+
+    if slug:
+        logger.warning("ESPN: unrecognized season.slug=%r on event %r", slug, event.get("name"))
+    return None
+
+
+def _fetch_event_summary(slug: str, event_id: str) -> Optional[dict]:
+    """Fetch the per-event summary payload. Returns None on error."""
+    url = _ESPN_SUMMARY_URL.format(slug=slug)
+    try:
+        resp = _session.get(url, params={"event": event_id}, timeout=15)
+        resp.raise_for_status()
+        return resp.json()
+    except Exception as e:
+        logger.debug("ESPN summary fetch failed for event %s: %s", event_id, e)
+        return None
+
+
+def _extract_group_label(summary_payload: dict) -> Optional[str]:
+    """Pull the group letter from an event's summary payload.
+
+    ESPN exposes it at header.competitions[0].competitors[*].groups.abbreviation
+    as "Group A", "Group B", ... We take the first non-empty competitor value
+    (both competitors always carry the same group for group-stage matches) and
+    strip the "Group " prefix. Returns None for knockout events (no groups).
+    """
+    try:
+        comps = summary_payload["header"]["competitions"][0]["competitors"]
+    except (KeyError, IndexError, TypeError):
+        return None
+    for c in comps:
+        abbr = ((c.get("groups") or {}).get("abbreviation") or "").strip()
+        if abbr.lower().startswith("group "):
+            label = abbr.split(" ", 1)[1].strip().upper()
+            # DB column is CHAR(2). Only accept 1–2 char labels.
+            if 1 <= len(label) <= 2 and label.isalpha():
+                return label
+    return None
 
 
 def _extract_teams(event: dict) -> tuple[Optional[str], Optional[str]]:
@@ -210,8 +304,22 @@ def seed_from_espn(db: Session) -> dict:
             if existing:
                 if kickoff_time and not existing.kickoff_time:
                     existing.kickoff_time = kickoff_time
+                # Backfill stage/group for rows that pre-date this change.
+                if existing.stage is None:
+                    existing.stage = _extract_stage(ev)
+                if existing.stage == "group" and existing.group_label is None:
+                    summary = _fetch_event_summary(slug, str(ev.get("id") or ""))
+                    if summary:
+                        existing.group_label = _extract_group_label(summary)
                 stats["already_exists"] += 1
                 continue
+
+            stage = _extract_stage(ev)
+            group_label = None
+            if stage == "group":
+                summary = _fetch_event_summary(slug, str(ev.get("id") or ""))
+                if summary:
+                    group_label = _extract_group_label(summary)
 
             db.add(
                 Match(
@@ -222,6 +330,8 @@ def seed_from_espn(db: Session) -> dict:
                     kickoff_time=kickoff_time,
                     status="scheduled",
                     season=_current_season_str(),
+                    stage=stage,
+                    group_label=group_label,
                 )
             )
             stats["seeded"] += 1

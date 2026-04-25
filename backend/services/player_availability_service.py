@@ -48,13 +48,16 @@ logger = logging.getLogger(__name__)
 API_FOOTBALL_BASE = "https://v3.football.api-sports.io"
 
 # API-Football league IDs for all tracked leagues.
-# National League uses 699 (Vanarama National League), not 43.
+# National League is api_id=43 (Vanarama National League, English 5th tier,
+# men's). API-Football id=699 is the *Women's Championship* — verified via
+# /leagues?country=England&type=League on 2026-04-24. Using 699 here would
+# fuzzy-match women's clubs onto the men's roster.
 LEAGUE_API_FOOTBALL_IDS: dict[str, int] = {
     "epl": 39,
     "championship": 40,
     "league_one": 41,
     "league_two": 42,
-    "national_league": 699,
+    "national_league": 43,
     "laliga": 140,
     "seriea": 135,
     "bundesliga": 78,
