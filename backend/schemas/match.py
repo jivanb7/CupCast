@@ -62,10 +62,12 @@ class MatchSummary(BaseModel):
     home_team_name: str
     home_team_short_name: Optional[str] = None
     home_team_crest: Optional[str] = None
+    home_team_country_code: Optional[str] = None
     away_team_id: int
     away_team_name: str
     away_team_short_name: Optional[str] = None
     away_team_crest: Optional[str] = None
+    away_team_country_code: Optional[str] = None
     league_code: str
     league_name: str
     season: Optional[str] = None
@@ -76,6 +78,8 @@ class MatchSummary(BaseModel):
     match_minute: Optional[str] = None
     kickoff_time: Optional[str] = None
     tournament: Optional[str] = None
+    stage: Optional[str] = None
+    group_label: Optional[str] = None
     prediction: Optional[PredictionSummary] = None
 
     model_config = {"from_attributes": True}

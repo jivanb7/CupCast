@@ -28,7 +28,10 @@ Security note:
   the public internet.
 """
 
-from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException
+from datetime import datetime, timedelta, timezone
+
+from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Query
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from config import settings
@@ -37,11 +40,131 @@ from database import get_db
 router = APIRouter(prefix="/admin", tags=["admin"])
 
 
+# Health endpoint thresholds. Mirror the anomaly thresholds in
+# revalidate_recent_scores.py so the Cloud Logging WARNING/ERROR levels and
+# this endpoint's status field tell the same story.
+_HEALTH_OK_CORRECTIONS_24H = 5
+_HEALTH_WARN_CORRECTIONS_24H = 15
+_HEALTH_OK_REVAL_AGE_HOURS = 12
+_HEALTH_ERROR_REVAL_AGE_HOURS = 24
+# Window after a match's updated_at was last touched, beyond which a
+# 'completed' match is considered stale w.r.t. cross-source confirmation.
+_STALE_COMPLETED_WINDOW_HOURS = 6
+
+
 def verify_admin_key(x_admin_key: str = Header(...)):
     """FastAPI dependency: verify the admin API key header."""
     if x_admin_key != settings.admin_api_key:
         raise HTTPException(status_code=403, detail="Invalid admin key")
     return x_admin_key
+
+
+@router.get("/health/scores")
+def scores_health(db: Session = Depends(get_db)):
+    """Read-only system status for the score-validation pipeline.
+
+    No auth: this endpoint is bookmark-friendly so anyone (incl. uptime
+    monitors) can poll it. It returns counts and timestamps only — no PII,
+    no scores, no model output.
+
+    Status semantics (mirror revalidate's anomaly log thresholds):
+      ok    : corrections_24h <= 5 AND last revalidation <= 12 h ago
+      warn  : 5 < corrections_24h <= 15 OR last revalidation > 12 h ago
+      error : corrections_24h > 15 OR last revalidation > 24 h ago OR no data
+    """
+    from models.match import Match
+    from models.score_correction import ScoreCorrection
+
+    now = datetime.now(timezone.utc)
+    now_naive = now.replace(tzinfo=None)
+    cutoff_24h = now_naive - timedelta(hours=24)
+    cutoff_7d = now_naive - timedelta(days=7)
+    stale_cutoff = now_naive - timedelta(hours=_STALE_COMPLETED_WINDOW_HOURS)
+
+    corrections_24h = (
+        db.query(func.count(ScoreCorrection.id))
+        .filter(ScoreCorrection.corrected_at >= cutoff_24h)
+        .scalar()
+        or 0
+    )
+    corrections_7d = (
+        db.query(func.count(ScoreCorrection.id))
+        .filter(ScoreCorrection.corrected_at >= cutoff_7d)
+        .scalar()
+        or 0
+    )
+
+    # "Last revalidation" = the most recent run_id that came from the
+    # standalone revalidate script (run_ids from score_updater are prefixed
+    # so we can distinguish them — but BOTH count toward "the system saw
+    # data in the last N hours"). We surface the most recent ScoreCorrection
+    # timestamp as a proxy for "did the pipeline run". This is intentionally
+    # approximate: a clean run with zero mismatches won't show here, which
+    # is why the heuristic also looks at corrections_24h.
+    last_correction = (
+        db.query(ScoreCorrection)
+        .order_by(ScoreCorrection.corrected_at.desc())
+        .first()
+    )
+    if last_correction is not None:
+        # Group by run_id to summarize the most recent run
+        last_run_id = last_correction.run_id
+        run_rows = (
+            db.query(ScoreCorrection)
+            .filter(ScoreCorrection.run_id == last_run_id)
+            .all()
+        )
+        last_revalidation = {
+            "run_at": last_correction.corrected_at.isoformat(),
+            "run_id": last_run_id,
+            "mismatches_found": len(run_rows),
+            "predictions_reevaluated": sum(
+                (r.predictions_reevaluated or 0) for r in run_rows
+            ),
+        }
+        revalidation_age_hours = (
+            now_naive - last_correction.corrected_at
+        ).total_seconds() / 3600
+    else:
+        last_revalidation = None
+        revalidation_age_hours = None
+
+    # Stale completed matches: status='completed' but updated_at older than
+    # the 6-hour cross-source confirmation window. NULL updated_at counts as
+    # stale (legacy rows the pipeline has never re-touched).
+    stale_completed = (
+        db.query(func.count(Match.id))
+        .filter(
+            Match.status == "completed",
+            (Match.updated_at == None) | (Match.updated_at < stale_cutoff),  # noqa: E711
+        )
+        .scalar()
+        or 0
+    )
+
+    # Apply the status heuristic. Order matters: error overrides warn.
+    if (
+        corrections_24h > _HEALTH_WARN_CORRECTIONS_24H
+        or revalidation_age_hours is None
+        or (revalidation_age_hours is not None and revalidation_age_hours > _HEALTH_ERROR_REVAL_AGE_HOURS)
+    ):
+        status = "error"
+    elif (
+        corrections_24h > _HEALTH_OK_CORRECTIONS_24H
+        or (revalidation_age_hours is not None and revalidation_age_hours > _HEALTH_OK_REVAL_AGE_HOURS)
+    ):
+        status = "warn"
+    else:
+        status = "ok"
+
+    return {
+        "status": status,
+        "last_revalidation": last_revalidation,
+        "corrections_last_24h": int(corrections_24h),
+        "corrections_last_7d": int(corrections_7d),
+        "stale_completed_matches": int(stale_completed),
+        "checked_at": now.isoformat(),
+    }
 
 
 @router.post("/scores/update")
@@ -57,6 +180,33 @@ def update_scores(
         return {"status": "done", **stats}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Score update failed: {str(e)}")
+
+
+@router.post("/scores/revalidate")
+def revalidate_scores(
+    days: int = Query(2, ge=1, le=7),
+    _key: str = Depends(verify_admin_key),
+    db: Session = Depends(get_db),
+):
+    """Cross-check the last N days of completed match scores against API-Football.
+
+    Catches the "intermediate score frozen" failure mode that the CSV-based
+    score_updater can leave behind (e.g. Real Betis 0-1 instead of 1-1 final
+    on 2026-04-24). For any DB completed match whose API-Football full-time
+    score disagrees with ours, the row is rewritten and predictions on it are
+    re-evaluated.
+
+    Recommended Cloud Scheduler cron: every 6 h
+      e.g.  0 */6 * * *   POST /admin/scores/revalidate?days=2
+    """
+    from scripts.revalidate_recent_scores import revalidate
+
+    try:
+        return {"status": "done", **revalidate(db, days=days)}
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, detail=f"Score revalidation failed: {str(e)}"
+        )
 
 
 @router.post("/data/refresh")
@@ -198,6 +348,74 @@ def refresh_league_odds(
             status_code=500,
             detail=f"Odds refresh failed for '{league_code}': {str(e)}",
         )
+
+
+@router.post("/world-cup/run-simulation")
+def run_wc_simulation(
+    n_sims: int = 10_000,
+    seed: int = 42,
+    _key: str = Depends(verify_admin_key),
+    db: Session = Depends(get_db),
+):
+    """Run a fresh World Cup Monte Carlo simulation and persist the result.
+
+    Query params:
+      n_sims: number of MC runs (default 10k — ~3-4s on a laptop).
+      seed:   master RNG seed for reproducibility.
+
+    Returns: row id, top-5 contenders, runtime, and sum-to-100 sanity check.
+    """
+    import json
+    import time
+
+    from models.tournament_simulation import TournamentSimulation
+    from services.tournament_simulator import result_to_json, simulate_world_cup
+
+    if n_sims < 1 or n_sims > 100_000:
+        raise HTTPException(
+            status_code=422,
+            detail=f"n_sims must be in [1, 100000], got {n_sims}",
+        )
+
+    started = time.perf_counter()
+    try:
+        result = simulate_world_cup(db, n_sims=n_sims, seed=seed)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Simulation failed: {e}")
+    elapsed = time.perf_counter() - started
+
+    payload = result_to_json(result)
+    row = TournamentSimulation(
+        run_at=result.run_at,
+        n_sims=result.n_sims,
+        result_json=json.dumps(payload),
+        model_version=result.model_version,
+        elo_model_version=result.elo_model_version,
+        seed=result.seed,
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+
+    sum_pct = sum(p.win_tournament_pct for p in result.per_team)
+
+    return {
+        "status": "done",
+        "simulation_id": row.id,
+        "run_at": result.run_at.isoformat(),
+        "n_sims": result.n_sims,
+        "seed": result.seed,
+        "runtime_seconds": round(elapsed, 3),
+        "sum_win_tournament_pct": round(sum_pct, 4),
+        "top_5_contenders": [
+            {
+                "name": p.name,
+                "country_code": p.country_code,
+                "win_tournament_pct": round(p.win_tournament_pct, 2),
+            }
+            for p in result.per_team[:5]
+        ],
+    }
 
 
 @router.post("/players/refresh/{league_code}")
