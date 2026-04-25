@@ -8,3 +8,6 @@ from models.fifa_ranking import FifaRanking
 from models.model_registry import ModelRegistry
 from models.player import Player
 from models.player_injury import PlayerInjury
+from models.team_elo import TeamElo
+from models.tournament_simulation import TournamentSimulation
+from models.score_correction import ScoreCorrection
