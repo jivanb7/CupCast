@@ -54,6 +54,36 @@ jobs:
       - name: Configure Docker for Artifact Registry
         run: gcloud auth configure-docker ${{ env.ARTIFACT_REGISTRY }}
 
+      # ──────────────────────────────────────────────────────────────────
+      # SCHEMA MIGRATIONS (must run BEFORE deploying the new backend code).
+      # Migrations are additive-only by convention, so applying them while
+      # the OLD revision is still serving traffic is safe — the old code
+      # ignores new columns/tables, the new code requires them present.
+      # If this step fails, the deploy aborts and prod stays on the old
+      # revision (no broken state).
+      # ──────────────────────────────────────────────────────────────────
+      - name: Set up Python for Alembic
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Apply Alembic migrations to production DB
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          cd backend
+          pip install --quiet -r requirements.txt
+          echo "Current alembic revision (before upgrade):"
+          alembic current || echo "(no version stamped yet — first run)"
+          echo ""
+          echo "Migrations to apply:"
+          alembic heads
+          echo ""
+          alembic upgrade head
+          echo ""
+          echo "Final alembic revision:"
+          alembic current
+
       # Backend build context is the repo root so the Dockerfile can COPY ml/
       # alongside backend/. The -f flag selects the Dockerfile.
       - name: Build and push backend image
@@ -71,6 +101,18 @@ jobs:
             -f frontend/Dockerfile -t $IMAGE frontend/
           docker push $IMAGE
           echo "FRONTEND_IMAGE=$IMAGE" >> $GITHUB_ENV
+
+      # Capture the current backend revision BEFORE deploying so we can
+      # roll back if the post-deploy smoke test fails. First-deploy edge
+      # case (no prior revision): PREVIOUS_REVISION ends up empty and
+      # rollback is skipped.
+      - name: Capture previous backend revision (for rollback safety)
+        run: |
+          PREV=$(gcloud run services describe ${{ env.BACKEND_SERVICE }} \
+            --region ${{ env.GCP_REGION }} \
+            --format='value(status.latestReadyRevisionName)' 2>/dev/null || echo "")
+          echo "PREVIOUS_BACKEND_REVISION=$PREV" >> $GITHUB_ENV
+          echo "Previous backend revision (rollback target): $PREV"
 
       - name: Deploy backend to Cloud Run
         run: |
@@ -106,8 +148,43 @@ jobs:
             --min-instances 0 \
             --max-instances 2
 
-      - name: Smoke test backend
+      # ──────────────────────────────────────────────────────────────────
+      # SMOKE TEST — hits real endpoints that touch the new schema. The
+      # old /health check passed even when migrations were missing because
+      # /health doesn't query any tables. These checks would have caught
+      # the Apr 24 outage (column matches.stage does not exist).
+      # ──────────────────────────────────────────────────────────────────
+      - name: Smoke test backend (real endpoints)
+        id: smoke
         run: |
           BACKEND_URL=$(gcloud run services describe ${{ env.BACKEND_SERVICE }} \
             --region ${{ env.GCP_REGION }} --format 'value(status.url)')
-          curl -f "${BACKEND_URL}/health" || exit 1
+          echo "Smoke testing $BACKEND_URL"
+          set -e
+          # /health — basic process liveness
+          curl -sf -o /dev/null --max-time 10 "${BACKEND_URL}/health"
+          # /api/v1/matches/upcoming — exercises matches+predictions+teams
+          # joins + the new stage/group_label/country_code columns
+          curl -sf -o /dev/null --max-time 15 "${BACKEND_URL}/api/v1/matches/upcoming?days_ahead=7"
+          # /api/v1/world-cup/overview — exercises the new WC router +
+          # team_elo + tournament_simulations tables
+          curl -sf -o /dev/null --max-time 15 "${BACKEND_URL}/api/v1/world-cup/overview"
+          # /api/v1/world-cup/groups — exercises group_standings +
+          # qualification_status + projected-from-elo logic
+          curl -sf -o /dev/null --max-time 15 "${BACKEND_URL}/api/v1/world-cup/groups"
+          echo "All smoke checks passed."
+
+      # ──────────────────────────────────────────────────────────────────
+      # AUTO-ROLLBACK on smoke failure. If any of the curls above non-200,
+      # this step routes 100% traffic back to the previous Cloud Run
+      # revision so users see the old (working) version while we debug.
+      # ──────────────────────────────────────────────────────────────────
+      - name: Roll back backend on smoke test failure
+        if: failure() && steps.smoke.conclusion == 'failure' && env.PREVIOUS_BACKEND_REVISION != ''
+        run: |
+          echo "Smoke test failed. Rolling back ${{ env.BACKEND_SERVICE }} to $PREVIOUS_BACKEND_REVISION"
+          gcloud run services update-traffic ${{ env.BACKEND_SERVICE }} \
+            --region ${{ env.GCP_REGION }} \
+            --to-revisions=$PREVIOUS_BACKEND_REVISION=100
+          echo "Rollback complete. Traffic now serving from $PREVIOUS_BACKEND_REVISION"
+          exit 1  # keep the workflow red so the alert fires
