@@ -21,7 +21,8 @@ Called by:
 """
 
 import logging
-from datetime import date, timedelta
+import secrets
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -36,6 +37,88 @@ logger = logging.getLogger(__name__)
 
 # football-data.co.uk base URL
 FOOTBALL_DATA_UK_BASE = "https://www.football-data.co.uk/mmz4281"
+
+# How long after a match is marked 'completed' we still cross-check incoming
+# data against it. Catches the Real-Betis-style bug where an intermediate score
+# was locked in and the late equaliser never updated. 6 h covers a match that
+# ends at 22:00 local being re-checked by ~04:00 next day before users wake up.
+COMPLETED_RECHECK_WINDOW = timedelta(hours=6)
+
+# Minimum minutes after kickoff before we trust a 'FINISHED' signal.
+#  - regular league match: 90' + 15' stoppage/HT = 105 min
+#  - cup-style match (UCL knockouts, World Cup KO): may go to ET + pens, allow 130 min
+FULLTIME_MIN_AFTER_KICKOFF_NORMAL_S = 105 * 60
+FULLTIME_MIN_AFTER_KICKOFF_CUP_S = 130 * 60
+
+# League codes whose matches can extend to extra time + penalties. Detection is
+# coarse (group-stage WC games can't go to ET, but the cost of waiting an extra
+# 25 min before marking them complete is just a delayed update — much cheaper
+# than locking in a half-time score on a knockout that ends 2-2 then 4-2 on pens).
+_CUP_LEAGUE_CODES = {"ucl", "worldcup"}
+
+
+def _utc_now_naive() -> datetime:
+    """UTC 'now' as a naive datetime (matches SQLite CURRENT_TIMESTAMP storage)."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+def _score_updater_run_id() -> str:
+    """Generate a run_id for an in-window correction caught by score_updater.
+
+    Format: ``score_updater:<utc-iso-secs>-<3-byte-hex>``. Lets us group all
+    corrections written during a single update_scores() invocation while
+    distinguishing them from revalidate() runs.
+    """
+    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    return f"score_updater:{ts}-{secrets.token_hex(3)}"
+
+
+def _record_correction(
+    db,
+    *,
+    match_id: int,
+    before_home: Optional[int],
+    before_away: Optional[int],
+    before_result: Optional[str],
+    after_home: int,
+    after_away: int,
+    after_result: str,
+    source: str,
+    predictions_reevaluated: int,
+    run_id: str,
+) -> None:
+    """Best-effort audit log insert. Never raises; logs and moves on."""
+    from models.score_correction import ScoreCorrection
+    try:
+        db.add(
+            ScoreCorrection(
+                match_id=match_id,
+                before_home_goals=before_home,
+                before_away_goals=before_away,
+                before_result=before_result,
+                after_home_goals=after_home,
+                after_away_goals=after_away,
+                after_result=after_result,
+                source=source,
+                predictions_reevaluated=predictions_reevaluated,
+                run_id=run_id,
+            )
+        )
+    except Exception as exc:
+        logger.error(
+            "score_updater: failed to write audit row for match_id=%d: %s",
+            match_id, exc,
+        )
+
+
+def _is_cup_match(match, league_code: Optional[str] = None) -> bool:
+    """Return True if this match should use the longer 130-min FT guard."""
+    if league_code and league_code in _CUP_LEAGUE_CODES:
+        return True
+    # Fallback: legacy free-text 'tournament' field on the Match model.
+    tournament = (getattr(match, "tournament", None) or "").lower()
+    return any(tag in tournament for tag in ("world cup", "champions league", "uefa", "fifa"))
+
 
 # Map DB league codes to football-data.co.uk division codes
 LEAGUE_TO_DIV = {
@@ -90,6 +173,7 @@ def update_scores(db: Session) -> dict:
     from models.team import Team
 
     stats = {"updated": 0, "already_current": 0, "not_found": 0, "errors": 0}
+    run_id = _score_updater_run_id()
 
     # Get all active leagues
     leagues = db.query(League).filter(League.is_active == True).all()
@@ -172,18 +256,25 @@ def update_scores(db: Session) -> dict:
                 stats["not_found"] += 1
                 continue
 
+            # Re-check window: if a match was completed > 6 h ago, treat it as
+            # frozen (no need to keep re-syncing months-old results). Within
+            # the window, fall through and re-apply the CSV row in case our
+            # earlier write captured an intermediate score (Real-Betis bug).
             if match.status == "completed":
-                # Backfill was_correct on predictions that haven't been evaluated yet
-                if match.result:
-                    unevaluated = (
-                        db.query(Prediction)
-                        .filter(Prediction.match_id == match.id, Prediction.was_correct == None)
-                        .all()
-                    )
-                    for pred in unevaluated:
-                        pred.was_correct = (pred.predicted_result == match.result)
-                stats["already_current"] += 1
-                continue
+                _now_utc = _utc_now_naive()
+                # NULL updated_at = legacy row → treat as stale
+                if match.updated_at is None or (_now_utc - match.updated_at) > COMPLETED_RECHECK_WINDOW:
+                    if match.result:
+                        unevaluated = (
+                            db.query(Prediction)
+                            .filter(Prediction.match_id == match.id, Prediction.was_correct == None)
+                            .all()
+                        )
+                        for pred in unevaluated:
+                            pred.was_correct = (pred.predicted_result == match.result)
+                    stats["already_current"] += 1
+                    continue
+                # else: within re-check window — fall through to re-apply CSV scores
 
             # Update match with scores
             try:
@@ -197,10 +288,25 @@ def update_scores(db: Session) -> dict:
                 else:
                     result = "D"
 
+                # Snapshot before-state for the audit log. We only want to log
+                # a "correction" when this row was already 'completed' AND the
+                # incoming score differs (i.e. we're inside the 6-h re-check
+                # window catching a Real-Betis-style late goal).
+                was_completed = match.status == "completed"
+                prev_home = match.home_goals
+                prev_away = match.away_goals
+                prev_result = match.result
+                is_correction = was_completed and (
+                    prev_home != home_goals
+                    or prev_away != away_goals
+                    or prev_result != result
+                )
+
                 match.home_goals = home_goals
                 match.away_goals = away_goals
                 match.result = result
                 match.status = "completed"
+                match.updated_at = _utc_now_naive()
 
                 # Update optional stats if available
                 if not pd.isna(row.get("HTHG")):
@@ -241,6 +347,21 @@ def update_scores(db: Session) -> dict:
                 for pred in predictions:
                     pred.was_correct = (pred.predicted_result == result)
 
+                if is_correction:
+                    _record_correction(
+                        db,
+                        match_id=match.id,
+                        before_home=prev_home,
+                        before_away=prev_away,
+                        before_result=prev_result,
+                        after_home=home_goals,
+                        after_away=away_goals,
+                        after_result=result,
+                        source="football-data-csv",
+                        predictions_reevaluated=len(predictions),
+                        run_id=run_id,
+                    )
+
                 stats["updated"] += 1
 
             except Exception as e:
@@ -259,7 +380,7 @@ def update_scores(db: Session) -> dict:
         stats["errors"] += 1
 
     # Second pass: use Football-Data.org live API for matches the CSV missed
-    live_stats = update_scores_from_live_api(db)
+    live_stats = update_scores_from_live_api(db, run_id=run_id)
     stats["updated"] += live_stats.get("updated", 0)
 
     # Final pass: backfill was_correct for any unevaluated predictions on completed matches
@@ -294,11 +415,17 @@ def update_scores(db: Session) -> dict:
     return stats
 
 
-def update_scores_from_live_api(db: Session) -> dict:
+def update_scores_from_live_api(db: Session, run_id: Optional[str] = None) -> dict:
     """
     Use Football-Data.org API to update finished matches that the CSV missed.
     This catches same-day results before the CSV files are updated.
+
+    ``run_id`` (optional) groups any audit-log rows written by this pass with
+    the parent ``update_scores`` invocation. When called standalone the function
+    allocates its own.
     """
+    if run_id is None:
+        run_id = _score_updater_run_id()
     from models.league import League
     from models.match import Match
     from models.prediction import Prediction
@@ -405,8 +532,8 @@ def update_scores_from_live_api(db: Session) -> dict:
                 continue
 
             # Time guard: FD.org occasionally reports FINISHED prematurely. Only
-            # trust it if 100 min have passed since kickoff (regulation + stoppage).
-            # Otherwise just sync the score and keep status as 'live'.
+            # trust it once enough time has passed since kickoff to cover full
+            # regulation + stoppage (and ET + pens for cup-style matches).
             from datetime import datetime as _dt, timezone as _tz
             past_full_time = False
             if match.kickoff_time and match.match_date:
@@ -415,7 +542,15 @@ def update_scores_from_live_api(db: Session) -> dict:
                     _ko = _dt.combine(match.match_date, _dt.min.time(), tzinfo=_tz.utc).replace(
                         hour=int(_dh), minute=int(_dm)
                     )
-                    past_full_time = (_dt.now(_tz.utc) - _ko).total_seconds() >= 6000
+                    # Resolve the league code so cup matches get the longer window
+                    league_obj = db.query(League).filter(League.id == match.league_id).first()
+                    league_code = league_obj.code if league_obj else None
+                    threshold_s = (
+                        FULLTIME_MIN_AFTER_KICKOFF_CUP_S
+                        if _is_cup_match(match, league_code)
+                        else FULLTIME_MIN_AFTER_KICKOFF_NORMAL_S
+                    )
+                    past_full_time = (_dt.now(_tz.utc) - _ko).total_seconds() >= threshold_s
                 except (ValueError, AttributeError):
                     past_full_time = False
 
@@ -430,6 +565,7 @@ def update_scores_from_live_api(db: Session) -> dict:
             match.home_goals = home_goals
             match.away_goals = away_goals
             match.result = result
+            match.updated_at = _utc_now_naive()
             if past_full_time:
                 match.status = "completed"
                 # Evaluate predictions only once we trust the FINISHED signal.

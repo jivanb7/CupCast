@@ -37,6 +37,19 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
+# Model version tag for World Cup predictions routed through the Elo predictor.
+# Kept distinct from the club `v2.0.0-routed` tag so predictions produced by
+# the two paths are separable in the DB and in downstream analytics.
+WC_ELO_MODEL_VERSION = "wc-elo-v1"
+
+
+class MissingEloError(Exception):
+    """Raised when we try to predict a WC match but one of the teams has no
+    team_elo row. Caller decides how to handle (batch loop skips the match,
+    a single-match call can surface the error to the user).
+    """
+    pass
+
 # Guards concurrent mutation of module-level model/data caches. Acquired by
 # invalidate_model_cache() (admin retrain thread) and any code path that
 # reads/writes _club_model, _club_top5_model, _intl_model, _club_matches_df.
@@ -166,6 +179,179 @@ def get_intl_model():
     return _intl_model
 
 
+def _latest_team_elo(db, team_id: int) -> Optional[float]:
+    """Return the most recent rating for a team, or None if no row exists.
+
+    Uses the (team_id, as_of_date) composite index — sorting DESC on as_of_date
+    then LIMIT 1 becomes a single index seek, so this is cheap to call per
+    match in a batch loop.
+    """
+    from models.team_elo import TeamElo
+
+    row = (
+        db.query(TeamElo.rating)
+        .filter(TeamElo.team_id == team_id)
+        .order_by(TeamElo.as_of_date.desc())
+        .limit(1)
+        .first()
+    )
+    return float(row[0]) if row else None
+
+
+def predict_wc_match(
+    db,
+    home_team_id: int,
+    away_team_id: int,
+    is_neutral: bool,
+) -> dict:
+    """Predict a World Cup match using the national-team Elo predictor.
+
+    Looks up each team's latest Elo rating, runs `predict_from_elo`, and
+    returns a dict with the same shape the club path emits so the caller
+    (`generate_batch_predictions`) can upsert it without branching.
+
+    Raises
+    ------
+    MissingEloError
+        If either team has no row in team_elo. Batch caller skips; single-
+        match callers can decide whether to surface or swallow.
+    """
+    from services.national_elo import predict_from_elo
+
+    home_elo = _latest_team_elo(db, home_team_id)
+    away_elo = _latest_team_elo(db, away_team_id)
+
+    if home_elo is None or away_elo is None:
+        missing = []
+        if home_elo is None:
+            missing.append(f"home_team_id={home_team_id}")
+        if away_elo is None:
+            missing.append(f"away_team_id={away_team_id}")
+        msg = f"No team_elo row for: {', '.join(missing)}"
+        logger.warning(msg)
+        raise MissingEloError(msg)
+
+    p_home, p_draw, p_away = predict_from_elo(home_elo, away_elo, is_neutral)
+
+    # Pick the result with highest probability; tie-break on the natural
+    # argmax order (H > D > A). A tie is astronomically unlikely with
+    # float arithmetic, so no special-casing.
+    probs = [("H", p_home), ("D", p_draw), ("A", p_away)]
+    predicted_result, confidence = max(probs, key=lambda x: x[1])
+
+    return {
+        "prob_home_win": float(p_home),
+        "prob_draw": float(p_draw),
+        "prob_away_win": float(p_away),
+        "predicted_result": predicted_result,
+        "confidence": float(confidence),
+        "model_version": WC_ELO_MODEL_VERSION,
+    }
+
+
+def _run_wc_predictions(db, scheduled, teams_by_id, leagues_by_id) -> tuple[int, int]:
+    """Generate predictions for all World Cup matches in `scheduled`.
+
+    Returns (predicted_count, skipped_count). Skipped matches are those where
+    at least one team has no team_elo row, or where the DB upsert failed.
+    Missing elo is logged and counted but does not abort the batch.
+
+    Called from `generate_batch_predictions` before the club feature pipeline
+    so WC matches never enter the club path.
+    """
+    from models.prediction import Prediction
+    from services.edge_service import compute_edge
+
+    predicted = 0
+    skipped = 0
+
+    # Filter once — avoids paying the leagues_by_id lookup for every non-WC
+    # match in the downstream upsert loop.
+    wc_matches = []
+    for match in scheduled:
+        league = leagues_by_id.get(match.league_id)
+        if league and league.code == "worldcup":
+            if match.home_team_id in teams_by_id and match.away_team_id in teams_by_id:
+                wc_matches.append(match)
+
+    if not wc_matches:
+        return (0, 0)
+
+    # Batch-fetch existing WC predictions to avoid N+1 on upsert.
+    wc_match_ids = [m.id for m in wc_matches]
+    existing_by_match = {
+        p.match_id: p
+        for p in db.query(Prediction)
+        .filter(
+            Prediction.match_id.in_(wc_match_ids),
+            Prediction.model_version == WC_ELO_MODEL_VERSION,
+        )
+        .all()
+    }
+
+    for match in wc_matches:
+        try:
+            pred_out = predict_wc_match(
+                db,
+                match.home_team_id,
+                match.away_team_id,
+                bool(match.is_neutral_venue),
+            )
+        except MissingEloError:
+            # Already logged inside predict_wc_match. Count and move on.
+            skipped += 1
+            continue
+        except Exception as e:
+            logger.warning("WC predict failed for match %d: %s", match.id, e)
+            skipped += 1
+            continue
+
+        edge_result = compute_edge(
+            prob_home=pred_out["prob_home_win"],
+            prob_draw=pred_out["prob_draw"],
+            prob_away=pred_out["prob_away_win"],
+            odds_home=None, odds_draw=None, odds_away=None,
+        )
+
+        pred_data = dict(
+            match_id=match.id,
+            model_version=WC_ELO_MODEL_VERSION,
+            prob_home_win=pred_out["prob_home_win"],
+            prob_draw=pred_out["prob_draw"],
+            prob_away_win=pred_out["prob_away_win"],
+            predicted_result=pred_out["predicted_result"],
+            confidence=pred_out["confidence"],
+            is_value_pick=edge_result.is_value_pick if edge_result else False,
+            value_pick_direction=edge_result.value_pick_direction if edge_result else None,
+            edge_home=edge_result.edge_home if edge_result else None,
+            edge_draw=edge_result.edge_draw if edge_result else None,
+            edge_away=edge_result.edge_away if edge_result else None,
+        )
+
+        existing = existing_by_match.get(match.id)
+        if existing:
+            for k, v in pred_data.items():
+                setattr(existing, k, v)
+        else:
+            db.add(Prediction(**pred_data))
+        predicted += 1
+
+    # Flush the WC writes now so the club path starts with a consistent
+    # session state. A final commit happens at the end of generate_batch_predictions.
+    try:
+        db.flush()
+    except Exception as e:
+        db.rollback()
+        logger.error("Failed to flush WC predictions: %s", e)
+        raise
+
+    if skipped:
+        logger.warning("WC batch: %d predictions, %d skipped (missing elo)", predicted, skipped)
+    else:
+        logger.info("WC batch: %d predictions written", predicted)
+    return (predicted, skipped)
+
+
 def generate_batch_predictions(db) -> int:
     """
     Run batch inference on all upcoming scheduled matches.
@@ -230,7 +416,16 @@ def generate_batch_predictions(db) -> int:
     league_ids = list({m.league_id for m in scheduled if m.league_id})
     leagues_by_id = {lg.id: lg for lg in db.query(League).filter(League.id.in_(league_ids)).all()}
 
-    # ── Step 1: Build dummy rows for ALL upcoming matches ──
+    # ── Route World Cup matches to the Elo predictor BEFORE the club path ──
+    # National teams aren't in club_matches.parquet, so feeding them through
+    # the EPL feature pipeline yields NaN features → zero-filled → garbage.
+    # The Elo predictor is a purpose-built national-team model; see
+    # services/national_elo.py.
+    wc_count, wc_skipped = _run_wc_predictions(
+        db, scheduled, teams_by_id, leagues_by_id
+    )
+
+    # ── Step 1: Build dummy rows for club-path matches only ──
     upcoming_rows = []
     match_index_map = {}  # maps position in upcoming_rows → Match ORM object
 
@@ -242,6 +437,13 @@ def generate_batch_predictions(db) -> int:
 
         league = leagues_by_id.get(match.league_id)
         db_league_code = league.code if league else "epl"
+
+        # WC matches are handled above via the Elo predictor. Skip here so they
+        # don't pollute the club feature matrix. Defensive log in case routing
+        # upstream ever regresses.
+        if db_league_code == "worldcup":
+            continue
+
         ml_league_code = DB_TO_ML_LEAGUE.get(db_league_code, "E0")
 
         upcoming_rows.append({
@@ -264,8 +466,12 @@ def generate_batch_predictions(db) -> int:
         match_index_map[len(upcoming_rows) - 1] = (match, ml_league_code)
 
     if not upcoming_rows:
-        logger.info("No valid upcoming matches (teams not resolved)")
-        return 0
+        # All scheduled matches were either WC (handled above) or had
+        # unresolved teams. Return whatever the WC path produced.
+        logger.info(
+            "No club-path matches to predict (wc=%d, skipped=%d)", wc_count, wc_skipped
+        )
+        return wc_count
 
     logger.info("Building feature matrix for %d upcoming + %d historical matches...",
                 len(upcoming_rows), len(_club_matches_df))
@@ -392,17 +598,21 @@ def generate_batch_predictions(db) -> int:
         logger.error("Failed to commit predictions: %s", e)
         raise
 
-    logger.info("Generated %d predictions, skipped %d (batch mode)", count, skipped)
+    logger.info(
+        "Generated %d club + %d wc predictions, skipped %d club / %d wc (batch mode)",
+        count, wc_count, skipped, wc_skipped,
+    )
 
-    # If every eligible match got skipped we have a systemic problem (missing
-    # dependency, bad model, broken features) — not per-match flakiness. Raise
-    # so the admin endpoint surfaces it as 500 instead of returning
-    # {"status":"done","predictions_generated":0} and masking the real issue.
+    # If every eligible club match got skipped we have a systemic problem
+    # (missing dependency, bad model, broken features) — not per-match
+    # flakiness. Raise so the admin endpoint surfaces it as 500 instead of
+    # silently returning {"status":"done","predictions_generated":0}.
+    # WC matches route through the Elo path and don't count toward this guard.
     eligible = len(match_index_map)
     if eligible > 0 and count == 0:
         raise RuntimeError(
-            f"prediction generation produced 0 predictions across {eligible} eligible matches — "
+            f"prediction generation produced 0 club predictions across {eligible} eligible matches — "
             "likely a systemic failure (check logs for repeated 'Failed to predict match' lines)"
         )
 
-    return count
+    return count + wc_count

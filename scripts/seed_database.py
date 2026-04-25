@@ -146,6 +146,29 @@ def seed_leagues(session):
     print(f"Seeded {count} leagues (skipped {len(leagues) - count} existing)")
 
 
+def _resolve_team_with_alias(session, team_name: str):
+    """Return an existing Team for ``team_name`` by checking canonical_name
+    first, then the team_name_aliases table.
+
+    Used by the parquet seeders so a legacy name encoded in historical data
+    (e.g. "RasenBallsport Leipzig") resolves to its canonical row ("RB
+    Leipzig") instead of being re-inserted as a duplicate.
+    """
+    if not team_name:
+        return None
+    team = session.query(Team).filter_by(canonical_name=team_name).first()
+    if team:
+        return team
+    alias = (
+        session.query(TeamNameAlias)
+        .filter(TeamNameAlias.alias == team_name)
+        .first()
+    )
+    if alias:
+        return session.query(Team).filter_by(id=alias.team_id).first()
+    return None
+
+
 # ── Step 2: Seed club teams from parquet ─────────────────────────────────────
 def seed_club_teams(session):
     """Extract all unique team names per league from club_matches.parquet."""
@@ -175,7 +198,12 @@ def seed_club_teams(session):
         for team_name in sorted(teams):
             if team_name in team_id_map:
                 continue
-            existing = session.query(Team).filter_by(canonical_name=team_name).first()
+            # Alias-aware: a parquet row may use a legacy name (e.g.
+            # "RasenBallsport Leipzig") that has been migrated into an alias
+            # of the canonical row ("RB Leipzig"). Resolve via the alias
+            # table before inserting, otherwise we'd recreate the duplicate
+            # the merge migration just cleaned up.
+            existing = _resolve_team_with_alias(session, team_name)
             if existing:
                 team_id_map[team_name] = existing.id
                 continue
@@ -347,7 +375,8 @@ def seed_fixtures(session):
         # Ensure both teams exist — create them if they don't
         for team_name in (home_name, away_name):
             if team_name not in team_id_map:
-                existing = session.query(Team).filter_by(canonical_name=team_name).first()
+                # Alias-aware lookup — see seed_club_teams() for rationale.
+                existing = _resolve_team_with_alias(session, team_name)
                 if existing:
                     team_id_map[team_name] = existing.id
                 else:

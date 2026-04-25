@@ -1,0 +1,21 @@
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+extend-exclude = [
+    "backend/migrations/versions",
+    "backend/scripts",
+    "ml/notebooks",
+    "ml/data",
+]
+
+[tool.ruff.lint]
+# Pragmatic ruleset: catch real bug-class issues (pyflakes), let style slide
+# until the codebase is cleaned up holistically.
+select = ["F"]
+# F401 (unused imports) and F841 (unused local var) are noisy across the
+# existing codebase and largely cosmetic — disable until a dedicated cleanup pass.
+ignore = ["F401", "F841"]
+
+[tool.ruff.lint.per-file-ignores]
+"__init__.py" = ["F401", "F403"]
+"backend/main.py" = ["E402"]

@@ -1,100 +1,121 @@
 import { useState, useEffect, useCallback } from 'react'
 import { Link } from 'react-router-dom'
-import { Sparkles, TrendingUp, Target, Zap, ArrowRight } from 'lucide-react'
-import { getUpcomingMatches, getResults, getLeagues } from '../services/api'
-import MatchCard from '../components/match/MatchCard'
-import ProbabilityBar from '../components/match/ProbabilityBar'
-import LeagueSelector from '../components/ui/LeagueSelector'
+import { getUpcomingMatches, getResults } from '../services/api'
+import FeaturedPrediction from '../components/match/FeaturedPrediction'
+import CountryCard from '../components/ui/CountryCard'
 import LoadingSpinner from '../components/ui/LoadingSpinner'
+import { matchToCountrySlug } from '../utils/countryMap'
 
-function formatDate(dateStr) {
-  if (!dateStr) return ''
-  const d = new Date(dateStr + 'T00:00:00')
-  return d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })
+/**
+ * Dashboard — landing hub.
+ * Fetches today's upcoming matches + recent results, picks the
+ * highest-confidence match in the next 24h as Featured, and renders
+ * KPIs + country exploration tiles.
+ */
+
+const COUNTRY_DEFINITIONS = [
+  { slug: 'england', name: 'England', subLabel: 'Premier League' },
+  { slug: 'spain', name: 'Spain', subLabel: 'La Liga' },
+  { slug: 'italy', name: 'Italy', subLabel: 'Serie A' },
+  { slug: 'germany', name: 'Germany', subLabel: 'Bundesliga' },
+  { slug: 'france', name: 'France', subLabel: 'Ligue 1' },
+  { slug: 'rest', name: 'Rest of World', subLabel: 'MLS · UCL · World Cup' },
+]
+
+function isToday(dateStr) {
+  const today = new Date().toLocaleDateString('en-CA') // YYYY-MM-DD in local
+  return dateStr === today
 }
 
-function formatKickoffTime(utcTime) {
-  if (!utcTime || utcTime === 'nan' || utcTime === 'NaN') return null
-  const today = new Date().toISOString().slice(0, 10)
-  const utcDate = new Date(`${today}T${utcTime}:00Z`)
-  if (isNaN(utcDate.getTime())) return null
-  return utcDate.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true, timeZoneName: 'short' })
-}
-
-function findSpotlightMatch(matches) {
-  const now = new Date()
-  const cutoff = new Date(now.getTime() + 3 * 24 * 60 * 60 * 1000)
+function pickFeatured(matches) {
+  if (!matches?.length) return null
+  const now = Date.now()
+  const cutoff = now + 24 * 60 * 60 * 1000
 
   const candidates = matches.filter((m) => {
-    if (!m.prediction) return false
-    const matchDate = new Date(m.match_date + 'T00:00:00')
-    return matchDate <= cutoff
+    if (!m.prediction || m.status === 'completed') return false
+    if (!m.match_date) return false
+    const time = m.kickoff_time && m.kickoff_time !== 'nan' && m.kickoff_time !== 'NaN'
+      ? m.kickoff_time : '12:00'
+    const dt = new Date(`${m.match_date}T${time}:00Z`).getTime()
+    if (Number.isNaN(dt)) return false
+    return dt >= now - 2 * 60 * 60 * 1000 && dt <= cutoff
   })
 
-  if (candidates.length === 0) return null
-
-  return candidates.reduce((best, m) => {
-    const conf = m.prediction.confidence || 0
-    const bestConf = best.prediction.confidence || 0
-    return conf > bestConf ? m : best
-  })
+  if (!candidates.length) return null
+  return candidates.reduce((best, m) =>
+    (m.prediction.confidence ?? 0) > (best.prediction.confidence ?? 0) ? m : best
+  )
 }
 
-function KpiCard({ icon: Icon, label, value, subtext, accent = false }) {
+function KpiTile({ label, value, sub, accent = false, tooltip = null }) {
+  const [showTooltip, setShowTooltip] = useState(false)
   return (
-    <div className="cc-stat-card">
-      <div className="flex items-center gap-2 mb-2">
-        <Icon className={`w-4 h-4 ${accent ? 'text-accent-gold' : 'text-foreground-muted'}`} />
-        <span className="cc-label">{label}</span>
+    <div
+      className={`relative rounded-[12px] px-4 py-3.5 bg-card border ${accent ? 'border-accent-gold/30' : 'border-white/6'}`}
+    >
+      <div className="flex items-center justify-between mb-1.5">
+        <span className={`cc-label ${accent ? 'text-accent-gold' : ''}`}>{label}</span>
+        {tooltip && (
+          <button
+            type="button"
+            className="w-3.5 h-3.5 rounded-full border border-foreground-muted text-foreground-muted text-[9px] font-bold italic font-serif inline-flex items-center justify-center hover:border-accent-gold hover:text-accent-gold cursor-help"
+            onMouseEnter={() => setShowTooltip(true)}
+            onMouseLeave={() => setShowTooltip(false)}
+            onFocus={() => setShowTooltip(true)}
+            onBlur={() => setShowTooltip(false)}
+            aria-label={`More info: ${label}`}
+          >
+            i
+          </button>
+        )}
       </div>
-      <p className={`text-3xl font-bold text-tabular ${accent ? 'text-accent-gold' : 'text-foreground'}`}>
+      <div className={`text-3xl font-extrabold tracking-[-0.03em] text-tabular ${accent ? 'text-accent-gold' : 'text-foreground'}`}>
         {value}
-      </p>
-      {subtext && <p className="text-xs text-foreground-muted mt-1">{subtext}</p>}
+      </div>
+      {sub && <div className="text-[11px] text-foreground-muted mt-0.5">{sub}</div>}
+
+      {tooltip && showTooltip && (
+        <div
+          className="absolute right-2 top-full mt-2 z-10 w-[230px] rounded-lg border border-white/12 bg-elevated px-3 py-2.5 text-[11px] text-foreground leading-relaxed shadow-xl"
+          role="tooltip"
+        >
+          {tooltip}
+        </div>
+      )}
     </div>
   )
 }
 
 export default function Dashboard() {
-  const [leagues, setLeagues] = useState([])
   const [matches, setMatches] = useState([])
   const [results, setResults] = useState([])
-  const [resultAccuracy, setResultAccuracy] = useState(null)
-  const [selectedLeague, setSelectedLeague] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
-
-  useEffect(() => {
-    getLeagues()
-      .then(setLeagues)
-      .catch((err) => setError(err.message))
-  }, [])
 
   const fetchData = useCallback((showSpinner = true) => {
     if (showSpinner) {
       setLoading(true)
       setError(null)
     }
-
+    // 60d window so the Rest-of-World card (MLS + UCL + WC) has data —
+    // WC fixtures don't start until June 11 and MLS schedules ~30d ahead.
+    // Per-country cards still bucket by date themselves.
     Promise.all([
-      getUpcomingMatches(selectedLeague, 14),
-      getResults(selectedLeague, 7),
+      getUpcomingMatches(null, 60),
+      getResults(null, 7),
     ])
       .then(([upcomingData, resultsData]) => {
         setMatches(upcomingData.matches || [])
         setResults(resultsData.matches || [])
-        setResultAccuracy(resultsData.prediction_accuracy)
         setError(null)
         setLoading(false)
       })
       .catch((err) => {
-        // On background refresh, keep last good data visible
-        if (showSpinner) {
-          setError(err.message)
-        }
+        if (showSpinner) setError(err.message)
         setLoading(false)
       })
-  }, [selectedLeague])
+  }, [])
 
   useEffect(() => {
     fetchData(true)
@@ -102,183 +123,95 @@ export default function Dashboard() {
     return () => clearInterval(interval)
   }, [fetchData])
 
-  const spotlight = findSpotlightMatch(matches)
-  const valuePicks = matches.filter(m => m.prediction?.is_value_pick).length
+  const featured = pickFeatured(matches)
+  const todayMatches = matches.filter((m) => isToday(m.match_date))
+  const todayCount = todayMatches.length
+  const valuePicks = todayMatches.filter((m) => m.prediction?.is_value_pick).length
 
-  // Compute today's accuracy (not all-time)
-  const today = new Date().toLocaleDateString('en-CA')
-  const todayResults = results.filter(m => m.match_date === today && m.prediction?.was_correct !== null && m.prediction?.was_correct !== undefined)
-  const todayCorrect = todayResults.filter(m => m.prediction?.was_correct === true).length
-  const todayAccuracy = todayResults.length > 0 ? Math.round((todayCorrect / todayResults.length) * 100) : null
+  // Today's accuracy from completed matches with a prediction
+  const todayResults = results.filter(
+    (m) => isToday(m.match_date) && m.prediction?.was_correct != null
+  )
+  const todayCorrect = todayResults.filter((m) => m.prediction.was_correct).length
+  const todayAccuracy = todayResults.length > 0
+    ? Math.round((todayCorrect / todayResults.length) * 100)
+    : null
+
+  // Bucket matches by country for the cards. The Matches page uses a richer
+  // slug vocabulary (usa / ucl / world-cup as separate filters), but the
+  // Dashboard collapses them all into a single "Rest of World" tile —
+  // remap on the fly here rather than touching the shared countryMap util.
+  const SLUG_TO_TILE = {
+    england: 'england', spain: 'spain', italy: 'italy',
+    germany: 'germany', france: 'france',
+    usa: 'rest', ucl: 'rest', 'world-cup': 'rest', rest: 'rest',
+  }
+  const counts = COUNTRY_DEFINITIONS.reduce((acc, c) => {
+    acc[c.slug] = { todayCount: 0, upcomingCount: 0 }
+    return acc
+  }, {})
+  matches.forEach((m) => {
+    const rawSlug = matchToCountrySlug(m)
+    const tileSlug = SLUG_TO_TILE[rawSlug] || 'rest'
+    if (!counts[tileSlug]) return
+    if (isToday(m.match_date)) counts[tileSlug].todayCount += 1
+    else counts[tileSlug].upcomingCount += 1
+  })
+
+  const countryData = COUNTRY_DEFINITIONS.map((c) => ({
+    ...c,
+    todayCount: counts[c.slug].todayCount,
+    upcomingCount: counts[c.slug].upcomingCount,
+  }))
+
+  if (loading && !matches.length) {
+    return (
+      <div className="flex justify-center pt-32">
+        <LoadingSpinner size="lg" label="Loading dashboard" />
+      </div>
+    )
+  }
 
   return (
-    <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pt-24 pb-12">
-      {/* Hero Spotlight */}
-      {spotlight && (
-        <Link to={`/match/${spotlight.id}`} className="block mb-8 group">
-          <div className="cc-card-featured p-6 sm:p-8">
-            <div className="flex items-center gap-2 mb-4">
-              <Sparkles className="w-4 h-4 text-accent-gold" />
-              <span className="text-[11px] font-semibold uppercase tracking-[0.15em] text-accent-gold">
-                Featured Prediction
-              </span>
-              {spotlight.status === 'live' && (
-                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-accent-green/15 text-accent-green border border-accent-green/20">
-                  <span className="w-1.5 h-1.5 rounded-full bg-accent-green animate-pulse" />
-                  LIVE{spotlight.match_minute ? ` · ${spotlight.match_minute}` : ''}
-                </span>
-              )}
-            </div>
-
-            <div className="flex flex-col sm:flex-row items-center justify-between gap-6 mb-6">
-              <div className="text-center sm:text-left">
-                <h2 className="text-h2 text-foreground">
-                  <span className={
-                    spotlight.status === 'completed' && spotlight.result === 'H' ? 'text-accent-green' :
-                    spotlight.status !== 'completed' && spotlight.prediction?.predicted_result === 'H' ? 'text-accent-green' :
-                    spotlight.status !== 'completed' && spotlight.prediction?.predicted_result === 'D' ? 'text-accent-amber' :
-                    ''
-                  }>
-                    {spotlight.home_team_name}
-                  </span>
-                  {(spotlight.status === 'live' || spotlight.status === 'completed') && spotlight.home_goals != null ? (
-                    <span className="mx-3">
-                      <span className={spotlight.result === 'H' ? 'text-accent-green' : ''}>{spotlight.home_goals}</span>
-                      <span className="text-foreground-muted mx-1">-</span>
-                      <span className={spotlight.result === 'A' ? 'text-accent-green' : ''}>{spotlight.away_goals}</span>
-                    </span>
-                  ) : (
-                    <span className="text-foreground-muted mx-3">vs</span>
-                  )}
-                  <span className={
-                    spotlight.status === 'completed' && spotlight.result === 'A' ? 'text-accent-green' :
-                    spotlight.status !== 'completed' && spotlight.prediction?.predicted_result === 'A' ? 'text-accent-red' :
-                    spotlight.status !== 'completed' && spotlight.prediction?.predicted_result === 'D' ? 'text-accent-amber' :
-                    ''
-                  }>
-                    {spotlight.away_team_name}
-                  </span>
-                </h2>
-                <p className="text-sm text-foreground-muted mt-2">
-                  {spotlight.league_name} &middot; {formatDate(spotlight.match_date)}
-                  {spotlight.kickoff_time && formatKickoffTime(spotlight.kickoff_time) && (
-                    <span> &middot; {formatKickoffTime(spotlight.kickoff_time)}</span>
-                  )}
-                </p>
-              </div>
-
-              {spotlight.prediction && (
-                <div className="text-center flex-shrink-0">
-                  <p className="cc-label mb-1">Confidence</p>
-                  <p className="text-4xl font-bold text-accent-gold text-tabular">
-                    {spotlight.prediction.confidence != null ? `${Math.round(spotlight.prediction.confidence * 100)}%` : '--'}
-                  </p>
-                </div>
-              )}
-            </div>
-
-            {spotlight.prediction && (
-              <ProbabilityBar
-                probHome={spotlight.prediction.prob_home_win}
-                probDraw={spotlight.prediction.prob_draw}
-                probAway={spotlight.prediction.prob_away_win}
-                predictedResult={spotlight.prediction.predicted_result}
-                size="lg"
-              />
-            )}
-
-            <div className="flex items-center gap-1 mt-4 text-sm text-foreground-muted group-hover:text-accent-gold transition-colors duration-200">
-              View match details
-              <ArrowRight className="w-4 h-4" />
-            </div>
-          </div>
-        </Link>
+    <div className="max-w-[1180px] mx-auto px-4 sm:px-6 lg:px-12 pt-24 pb-12">
+      {error && !matches.length && (
+        <div className="cc-card p-6 mb-6 text-center">
+          <p className="text-accent-red">{error}</p>
+        </div>
       )}
 
-      {/* KPI Row */}
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-8">
-        <KpiCard
-          icon={TrendingUp}
-          label="Upcoming Matches"
-          value={matches.length}
-        />
-        <KpiCard
-          icon={Target}
+      <FeaturedPrediction match={featured} />
+
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 mb-5">
+        <KpiTile label="Today's Matches" value={todayCount} />
+        <KpiTile
           label="Today's Accuracy"
           value={todayAccuracy != null ? `${todayAccuracy}%` : '--'}
-          subtext={todayResults.length > 0 ? `${todayCorrect}/${todayResults.length} today` : 'No games evaluated yet'}
+          sub={todayResults.length > 0 ? `${todayCorrect}/${todayResults.length} evaluated` : 'No games evaluated yet'}
           accent
         />
-        <KpiCard
-          icon={Zap}
+        <KpiTile
           label="Value Picks Found"
           value={valuePicks}
+          sub="From today's fixtures"
+          tooltip="Matches where our model's probability exceeds the bookmaker's by at least 8%. Mathematically favorable bets."
         />
       </div>
 
-      {/* Section header + league selector */}
-      <div className="mb-6">
-        <h1 className="text-h1 mb-2">Upcoming Predictions</h1>
-        <p className="text-sm text-foreground-muted mb-6">ML-powered match outcome predictions</p>
-        <LeagueSelector
-          leagues={leagues}
-          selected={selectedLeague}
-          onChange={setSelectedLeague}
-        />
+      <h2 className="text-[20px] font-bold tracking-[-0.01em] mb-3.5">Explore by country</h2>
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+        {countryData.map((c) => (
+          <CountryCard key={c.slug} country={c} />
+        ))}
       </div>
 
-      {/* Content */}
-      <div>
-        {loading && (
-          <div className="flex justify-center py-20">
-            <LoadingSpinner size="lg" label="Loading matches" />
-          </div>
-        )}
-        {error && (
-          <div className="cc-card p-8 text-center">
-            <p className="text-accent-red">{error}</p>
-          </div>
-        )}
-        {!loading && !error && (
-          <>
-            {/* Match Grid */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-              {matches.map((match) => (
-                <MatchCard key={match.id} match={match} />
-              ))}
-              {matches.length === 0 && (
-                <div className="col-span-full cc-card p-12 text-center">
-                  <p className="text-foreground-muted">No upcoming matches found.</p>
-                </div>
-              )}
-            </div>
-
-            {/* Recent Results */}
-            {results.length > 0 && (
-              <section className="mt-16">
-                <div className="flex items-center justify-between mb-6">
-                  <h2 className="text-h2">Recent Results</h2>
-                  {todayAccuracy != null && (
-                    <span className="text-sm text-foreground-muted">
-                      Today:{' '}
-                      <span className="text-accent-green font-semibold text-tabular">
-                        {todayAccuracy}%
-                      </span>
-                      <span className="text-foreground-muted/50 ml-2">
-                        ({todayCorrect}/{todayResults.length})
-                      </span>
-                    </span>
-                  )}
-                </div>
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-                  {results.slice(0, 6).map((match) => (
-                    <MatchCard key={match.id} match={match} />
-                  ))}
-                </div>
-              </section>
-            )}
-          </>
-        )}
+      <div className="text-center mt-6">
+        <Link
+          to="/matches?tab=today"
+          className="inline-block px-6 py-2.5 rounded-[10px] bg-elevated border border-white/12 text-foreground text-sm font-semibold transition-colors hover:bg-elevated/80 hover:border-accent-gold/30"
+        >
+          See all {todayCount > 0 ? `${todayCount} games today` : 'matches'} →
+        </Link>
       </div>
     </div>
   )

@@ -53,10 +53,128 @@ def _run_score_update():
         from services.score_updater import update_scores
         stats = update_scores(db)
         logger.info("Scheduler: score update done — %s", stats)
+
+        # After scores are applied, append live Elo updates for any WC matches
+        # that just completed. Kept in this hook (not inside update_scores) so
+        # score ingestion stays agnostic of the rating system.
+        try:
+            elo_stats = _apply_wc_live_elo_updates(db)
+            if elo_stats["updated"] or elo_stats["errors"]:
+                logger.info("Scheduler: WC elo live-update — %s", elo_stats)
+        except Exception as e:
+            logger.error("Scheduler: WC elo live-update failed — %s", e)
     except Exception as e:
         logger.error("Scheduler: score update failed — %s", e)
     finally:
         db.close()
+
+
+def _apply_wc_live_elo_updates(db) -> dict:
+    """Append live_update rows to team_elo for recently-completed WC matches.
+
+    Finds WC matches with status='completed' that don't yet have a matching
+    `live_update` row in team_elo for their match_date, computes the new
+    ratings via national_elo.update_elo, and writes two rows (home + away).
+
+    Idempotent: the UNIQUE(team_id, as_of_date, source) constraint and the
+    per-match existence check prevent double-applying an update if the
+    scheduler fires twice.
+    """
+    from sqlalchemy import and_
+    from models.league import League
+    from models.match import Match
+    from models.team_elo import TeamElo
+    from services.national_elo import infer_k, update_elo
+
+    stats = {"updated": 0, "skipped_no_prior_elo": 0, "errors": 0}
+
+    wc_league = db.query(League).filter(League.code == "worldcup").first()
+    if not wc_league:
+        return stats
+
+    # Candidate matches: completed WC games with a known result.
+    completed = (
+        db.query(Match)
+        .filter(
+            Match.league_id == wc_league.id,
+            Match.status == "completed",
+            Match.home_goals.isnot(None),
+            Match.away_goals.isnot(None),
+        )
+        .all()
+    )
+
+    for match in completed:
+        # Has a live_update already been written for either team on this
+        # match_date? If yes, assume this match was processed. (Two WC games
+        # for the same team on the same date is impossible.)
+        existing = (
+            db.query(TeamElo.id)
+            .filter(
+                TeamElo.team_id.in_([match.home_team_id, match.away_team_id]),
+                TeamElo.as_of_date == match.match_date,
+                TeamElo.source == "live_update",
+            )
+            .first()
+        )
+        if existing:
+            continue
+
+        # Latest rating for each team (strictly before today; fine to include
+        # today's historical_backfill row if that's all we have).
+        home_row = (
+            db.query(TeamElo.rating)
+            .filter(TeamElo.team_id == match.home_team_id)
+            .order_by(TeamElo.as_of_date.desc(), TeamElo.id.desc())
+            .limit(1)
+            .first()
+        )
+        away_row = (
+            db.query(TeamElo.rating)
+            .filter(TeamElo.team_id == match.away_team_id)
+            .order_by(TeamElo.as_of_date.desc(), TeamElo.id.desc())
+            .limit(1)
+            .first()
+        )
+        if not home_row or not away_row:
+            stats["skipped_no_prior_elo"] += 1
+            continue
+
+        try:
+            k = infer_k(match.match_importance, match.tournament)
+            new_home, new_away = update_elo(
+                float(home_row[0]),
+                float(away_row[0]),
+                int(match.home_goals),
+                int(match.away_goals),
+                k_constant=k,
+                is_neutral=bool(match.is_neutral_venue),
+            )
+            db.add(TeamElo(
+                team_id=match.home_team_id,
+                rating=new_home,
+                as_of_date=match.match_date,
+                source="live_update",
+            ))
+            db.add(TeamElo(
+                team_id=match.away_team_id,
+                rating=new_away,
+                as_of_date=match.match_date,
+                source="live_update",
+            ))
+            stats["updated"] += 1
+        except Exception as e:
+            logger.warning("WC elo update failed for match %d: %s", match.id, e)
+            stats["errors"] += 1
+
+    if stats["updated"]:
+        try:
+            db.commit()
+        except Exception as e:
+            db.rollback()
+            logger.error("Failed to commit WC elo live-updates: %s", e)
+            stats["errors"] += 1
+    return stats
 
 
 def _run_fixture_refresh():

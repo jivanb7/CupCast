@@ -27,11 +27,16 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 # Install dependencies
 uv pip install -r requirements.txt
 
-# Set MLflow tracking URI (optional — falls back to local model file)
-export MLFLOW_TRACKING_URI=http://34.58.128.38:5000
+# Configure environment — copy .env.example to .env and fill in:
+#   MLFLOW_TRACKING_URI, MLFLOW_TRACKING_USERNAME, MLFLOW_TRACKING_PASSWORD
+#   API_FOOTBALL_KEYS, FOOTBALL_DATA_ORG_API_KEY, ADMIN_API_KEY
+#   GCP_PROJECT_ID
+# Production (Cloud Run) sets these directly in the container env.
 
-# Start the API
-uvicorn api.main:app --host 0.0.0.0 --port 8000
+# Start the API — pass `--env-file .env` so MLflow client picks up creds
+# (pydantic-settings loads .env into the Settings object but does NOT
+#  populate os.environ, which is where the MLflow client reads from).
+uvicorn --env-file .env --app-dir backend main:app --host 0.0.0.0 --port 8000
 ```
 
 ## Build and Run with Docker

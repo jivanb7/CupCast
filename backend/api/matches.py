@@ -150,10 +150,12 @@ def _match_to_summary(
         home_team_name=home_name,
         home_team_short_name=home.short_name if home else None,
         home_team_crest=home.logo_url if home else None,
+        home_team_country_code=home.country_code if home and home.country_code else None,
         away_team_id=m.away_team_id,
         away_team_name=away_name,
         away_team_short_name=away.short_name if away else None,
         away_team_crest=away.logo_url if away else None,
+        away_team_country_code=away.country_code if away and away.country_code else None,
         league_code=league.code if league else "unknown",
         league_name=league.name if league else "Unknown League",
         season=m.season,
@@ -164,6 +166,8 @@ def _match_to_summary(
         match_minute=match_minute,
         kickoff_time=m.kickoff_time,
         tournament=m.tournament,
+        stage=m.stage,
+        group_label=m.group_label,
         prediction=_prediction_to_summary(predictions.get(m.id)),
     )
 
@@ -230,7 +234,7 @@ def _get_team_form(db: Session, team_id: int, team_name: str, n: int = 5) -> Tea
 @router.get("/upcoming", response_model=UpcomingMatchesResponse)
 def get_upcoming_matches(
     league: Optional[str] = Query(None, description="Filter by league code"),
-    days_ahead: int = Query(7, ge=1, le=30),
+    days_ahead: int = Query(7, ge=1, le=90),
     db: Session = Depends(get_db),
 ):
     """Return upcoming scheduled matches with predictions."""
@@ -392,10 +396,12 @@ def get_match(
         home_team_name=home_name,
         home_team_short_name=home_team.short_name if home_team else None,
         home_team_crest=home_team.logo_url if home_team else None,
+        home_team_country_code=home_team.country_code if home_team and home_team.country_code else None,
         away_team_id=m.away_team_id,
         away_team_name=away_name,
         away_team_short_name=away_team.short_name if away_team else None,
         away_team_crest=away_team.logo_url if away_team else None,
+        away_team_country_code=away_team.country_code if away_team and away_team.country_code else None,
         league_code=league_code,
         league_name=league_name,
         season=m.season,

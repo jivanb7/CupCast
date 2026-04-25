@@ -1,0 +1,58 @@
+"""Maps team canonical_name -> ISO-3166 alpha-2 (with BCP 47 subdivisions for UK)."""
+
+NATIONAL_TEAM_COUNTRY_CODES: dict[str, str] = {
+    # North America
+    "United States": "us",
+    "Canada": "ca",
+    "Mexico": "mx",
+    "Panama": "pa",
+    "Haiti": "ht",
+    # South America
+    "Argentina": "ar",
+    "Brazil": "br",
+    "Colombia": "co",
+    "Ecuador": "ec",
+    "Paraguay": "py",
+    "Uruguay": "uy",
+    # Europe
+    "Austria": "at",
+    "Belgium": "be",
+    "Bosnia and Herzegovina": "ba",
+    "Croatia": "hr",
+    "Czech Republic": "cz",
+    "England": "gb-eng",
+    "France": "fr",
+    "Germany": "de",
+    "Netherlands": "nl",
+    "Norway": "no",
+    "Portugal": "pt",
+    "Scotland": "gb-sct",
+    "Spain": "es",
+    "Sweden": "se",
+    "Switzerland": "ch",
+    "Turkey": "tr",
+    # Africa
+    "Algeria": "dz",
+    "Cape Verde Islands": "cv",
+    "Côte d'Ivoire": "ci",
+    "Democratic Republic of Congo": "cd",
+    "Egypt": "eg",
+    "Ghana": "gh",
+    "Morocco": "ma",
+    "Senegal": "sn",
+    "South Africa": "za",
+    "Tunisia": "tn",
+    # Asia / Middle East
+    "Australia": "au",
+    "Iran": "ir",
+    "Iraq": "iq",
+    "Japan": "jp",
+    "Jordan": "jo",
+    "Qatar": "qa",
+    "Saudi Arabia": "sa",
+    "South Korea": "kr",
+    "Uzbekistan": "uz",
+    # Caribbean / Oceania
+    "Curaçao": "cw",
+    "New Zealand": "nz",
+}

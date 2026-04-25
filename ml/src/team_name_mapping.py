@@ -354,7 +354,6 @@ TEAM_NAME_MAP: dict[str, str] = {
     "North Macedonia": "North Macedonia",
     "FYR Macedonia": "North Macedonia",
     "Palestine": "Palestine",
-    "Chinese Taipei": "Taiwan",
 }
 
 
