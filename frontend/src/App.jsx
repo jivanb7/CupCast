@@ -6,7 +6,8 @@ import LoadingSpinner from './components/ui/LoadingSpinner'
 import Dashboard from './pages/Dashboard'
 
 const MatchDetail = lazy(() => import('./pages/MatchDetail'))
-const WorldCupHub = lazy(() => import('./pages/WorldCupHub'))
+const Matches = lazy(() => import('./pages/Matches'))
+const WorldCup = lazy(() => import('./pages/WorldCup'))
 const ModelPerformance = lazy(() => import('./pages/ModelPerformance'))
 const About = lazy(() => import('./pages/About'))
 const ValuePicks = lazy(() => import('./pages/ValuePicks'))
@@ -27,8 +28,9 @@ export default function App() {
         <Suspense fallback={<PageFallback />}>
           <Routes>
             <Route path="/" element={<Dashboard />} />
+            <Route path="/matches" element={<Matches />} />
             <Route path="/match/:matchId" element={<MatchDetail />} />
-            <Route path="/world-cup" element={<WorldCupHub />} />
+            <Route path="/world-cup" element={<WorldCup />} />
             <Route path="/model-performance" element={<ModelPerformance />} />
             <Route path="/value-picks" element={<ValuePicks />} />
             <Route path="/about" element={<About />} />

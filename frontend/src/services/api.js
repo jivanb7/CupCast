@@ -101,7 +101,7 @@ export const getLeagues = async () => {
   return response.data
 }
 
-// ---- World Cup ----
+// ---- World Cup (legacy /worldcup/*) ----
 
 /**
  * Fetch all group tables with predictions.
@@ -127,6 +127,61 @@ export const getWorldCupBracket = async () => {
  */
 export const getWorldCupWinnerOdds = async () => {
   const response = await client.get('/worldcup/winner-odds')
+  return response.data
+}
+
+// ---- World Cup 2026 (live /world-cup/*) ----
+
+/**
+ * Tournament-wide overview: dates, host countries, current stage, totals,
+ * model accuracy, next-match kickoff timestamp.
+ */
+export const getWcOverview = async () => {
+  const response = await client.get('/world-cup/overview')
+  return response.data
+}
+
+/**
+ * Group standings + venue + next-fixture preview for all 12 groups.
+ * Returns: { groups: [{ label, venue, teams: [...], next_fixtures: [...] }] }
+ */
+export const getWcGroups = async () => {
+  const response = await client.get('/world-cup/groups')
+  return response.data
+}
+
+/**
+ * World Cup fixtures filtered by stage/window.
+ * @param {object} [params]
+ * @param {string} [params.stage] — group, r32, r16, qf, sf, final
+ * @param {number} [params.days] — look-ahead window (1-60)
+ * @param {boolean} [params.includeCompleted]
+ * Returns: { matches: MatchSummary[], total, stage_filter, days, include_completed }
+ */
+export const getWcFixtures = async ({ stage, days, includeCompleted } = {}) => {
+  const params = {}
+  if (stage) params.stage = stage
+  if (days != null) params.days = days
+  if (includeCompleted != null) params.include_completed = includeCompleted
+  const response = await client.get('/world-cup/fixtures', { params })
+  return response.data
+}
+
+/**
+ * Monte Carlo title-odds projection (cached most-recent simulation row).
+ * Returns either { available: false, reason } or the full projection.
+ */
+export const getWcTitleOdds = async () => {
+  const response = await client.get('/world-cup/title-odds')
+  return response.data
+}
+
+/**
+ * Single very-first WC fixture + Elo-grounded one-line rationale.
+ * Returns: { available, match, home_elo, away_elo, rationale, reason? }
+ */
+export const getWcOpeningMatch = async () => {
+  const response = await client.get('/world-cup/opening-match')
   return response.data
 }
 

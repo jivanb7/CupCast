@@ -3,7 +3,7 @@ import { NavLink } from 'react-router-dom'
 import { Menu, X, Trophy, TrendingUp, BarChart3, Globe, Info } from 'lucide-react'
 
 const NAV_LINKS = [
-  { to: '/', label: 'Matches', end: true, icon: Trophy },
+  { to: '/matches', label: 'Matches', icon: Trophy },
   { to: '/world-cup', label: 'World Cup 2026', gold: true, icon: Globe },
   { to: '/model-performance', label: 'Model', icon: BarChart3 },
   { to: '/about', label: 'About', icon: Info },

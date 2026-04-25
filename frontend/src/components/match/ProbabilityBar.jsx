@@ -11,31 +11,36 @@ export default function ProbabilityBar({
   predictedResult,
   showLabels = true,
   size = 'md',
+  teamLabels = null, // { home: string, away: string } — when provided, render team names instead of "H"/"A"
 }) {
   const homePercent = Math.round((probHome ?? 0) * 100)
   const drawPercent = Math.round((probDraw ?? 0) * 100)
   const awayPercent = Math.round((probAway ?? 0) * 100)
 
   const barHeight = size === 'lg' ? 'h-3' : size === 'sm' ? 'h-1.5' : 'h-2'
+  const homeLabel = teamLabels?.home || 'H'
+  const awayLabel = teamLabels?.away || 'A'
+  const drawLabel = teamLabels ? 'Draw' : 'D'
 
   return (
     <div>
       {/* Labels above the bar */}
       {showLabels && (
-        <div className="flex justify-between mb-2">
-          <div className="flex items-center gap-1.5">
+        <div className="flex justify-between mb-2 gap-2">
+          <div className="flex items-center gap-1.5 min-w-0">
             <span
-              className={`text-xs font-medium text-tabular ${
+              className={`text-xs font-medium text-tabular truncate ${
                 predictedResult === 'H' ? 'text-accent-green' : 'text-foreground-muted'
               }`}
+              title={homeLabel}
             >
-              H {homePercent}%
+              {homePercent}% {homeLabel}
             </span>
             {predictedResult === 'H' && (
-              <span className="w-1 h-1 rounded-full bg-accent-green" />
+              <span className="w-1 h-1 rounded-full bg-accent-green flex-shrink-0" />
             )}
           </div>
-          <div className="flex items-center gap-1.5">
+          <div className="flex items-center gap-1.5 flex-shrink-0">
             {predictedResult === 'D' && (
               <span className="w-1 h-1 rounded-full bg-accent-amber" />
             )}
@@ -44,19 +49,20 @@ export default function ProbabilityBar({
                 predictedResult === 'D' ? 'text-accent-amber' : 'text-foreground-muted'
               }`}
             >
-              D {drawPercent}%
+              {drawPercent}% {drawLabel}
             </span>
           </div>
-          <div className="flex items-center gap-1.5">
+          <div className="flex items-center gap-1.5 min-w-0 justify-end">
             {predictedResult === 'A' && (
-              <span className="w-1 h-1 rounded-full bg-accent-red" />
+              <span className="w-1 h-1 rounded-full bg-accent-red flex-shrink-0" />
             )}
             <span
-              className={`text-xs font-medium text-tabular ${
+              className={`text-xs font-medium text-tabular truncate ${
                 predictedResult === 'A' ? 'text-accent-red' : 'text-foreground-muted'
               }`}
+              title={awayLabel}
             >
-              A {awayPercent}%
+              {awayPercent}% {awayLabel}
             </span>
           </div>
         </div>

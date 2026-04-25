@@ -10,6 +10,7 @@ import { BrowserRouter } from 'react-router-dom'
 import App from './App'
 import ErrorBoundary from './components/ui/ErrorBoundary'
 import './index.css'
+import 'flag-icons/css/flag-icons.min.css'
 
 ReactDOM.createRoot(document.getElementById('root')).render(
   <React.StrictMode>
