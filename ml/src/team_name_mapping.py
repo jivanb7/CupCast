@@ -395,6 +395,29 @@ def resolve_team_name(raw_name: str, source: str = "unknown") -> str:
     return raw_name
 
 
+def normalize_team_name(
+    raw_name: str,
+    league_code: str | None = None,
+    source: str | None = None,
+    **_kwargs,
+) -> str:
+    """Backward-compatibility alias for ``resolve_team_name``.
+
+    ``backend/services/score_updater.py`` and ``backend/services/fixture_seeder.py``
+    both import this name. Without this alias the imports failed silently
+    (wrapped in ``try/except ImportError``), and the callers fell back to an
+    identity lambda — which meant CSV team names like ``Heidenheim`` /
+    ``Pisa`` / ``Bologna`` / ``Roma`` were never normalised to the canonical
+    DB names ``1. FC Heidenheim`` / ``AC Pisa`` / ``Bologna FC`` / ``AS Roma``,
+    so completed matches never got their scores written.
+
+    The ``league_code`` kwarg is accepted for call-site compatibility (e.g.
+    ``"D1"``, ``"I1"``) but is only used as the source identifier in logs;
+    ``TEAM_NAME_MAP`` is keyed on raw name, not league.
+    """
+    return resolve_team_name(raw_name, source=source or league_code or "unknown")
+
+
 def validate_mapping_coverage(team_names: list[str], source: str = "unknown") -> list[str]:
     """
     Given a list of team names from a source, return those that are NOT in TEAM_NAME_MAP

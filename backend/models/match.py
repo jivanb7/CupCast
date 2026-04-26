@@ -23,7 +23,7 @@ Tournament bracket columns (all NULL for non-tournament matches):
 
 from sqlalchemy import (
     Boolean, Column, Date, DateTime, ForeignKey,
-    Index, Integer, SmallInteger, String
+    Index, Integer, SmallInteger, String, UniqueConstraint,
 )
 from sqlalchemy.sql import func
 from database import Base
@@ -75,4 +75,10 @@ class Match(Base):
         Index("ix_matches_date_status", "match_date", "status"),
         Index("ix_matches_home_team_date", "home_team_id", "match_date"),
         Index("ix_matches_away_team_date", "away_team_id", "match_date"),
+        # One physical fixture per (teams, league, date). Added in migration
+        # a3b4c5d6e7f8 alongside a one-shot dedup of 26 historical duplicates.
+        UniqueConstraint(
+            "home_team_id", "away_team_id", "league_id", "match_date",
+            name="uq_match_fixture",
+        ),
     )

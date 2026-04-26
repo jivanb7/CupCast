@@ -46,6 +46,7 @@ from datetime import date, datetime, timedelta
 from typing import Optional
 
 import requests
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 logger = logging.getLogger(__name__)
@@ -61,6 +62,17 @@ ESPN_BASE = "https://site.api.espn.com/apis/site/v2/sports/soccer"
 
 # ESPN slug → our DB league code.
 # NOTE: ESPN uses different slugs than football-data.org. These are stable.
+#
+# UCL is intentionally OFF this list. On 2026-04-25 ESPN's `uefa.champions`
+# slug returned six bogus "semifinal" fixtures pairing real UCL semifinalists
+# (PSG, Bayern, Arsenal) against teams that don't belong in this round
+# (DC United from MLS, plus preliminary-round clubs Drita and Inter Club
+# d'Escaldes). Whatever combination of upstream API drift, slug overload, or
+# our cross-league fuzzy team-resolution caused the mismatch — FDORG's `CL`
+# competition already covers UCL correctly, so ESPN was pure noise here.
+# If we ever need ESPN as a UCL backup we can re-enable with strict stage
+# filtering (only `qf`/`sf`/`final`) and a UEFA-country sanity check on the
+# resolved teams.
 ESPN_LEAGUES = {
     "eng.1": "epl",
     "eng.2": "championship",
@@ -71,7 +83,6 @@ ESPN_LEAGUES = {
     "ita.1": "seriea",
     "ger.1": "bundesliga",
     "fra.1": "ligue1",
-    "uefa.champions": "ucl",
     "usa.1": "mls",
     "fifa.world": "worldcup",
 }
@@ -321,20 +332,28 @@ def seed_from_espn(db: Session) -> dict:
                 if summary:
                     group_label = _extract_group_label(summary)
 
-            db.add(
-                Match(
-                    home_team_id=home_id,
-                    away_team_id=away_id,
-                    league_id=league.id,
-                    match_date=match_date,
-                    kickoff_time=kickoff_time,
-                    status="scheduled",
-                    season=_current_season_str(),
-                    stage=stage,
-                    group_label=group_label,
-                )
+            # Race-safe insert. ESPN runs after FDORG + CSV in seed_all_fixtures,
+            # so most of these collide with the uq_match_fixture UC and turn into
+            # silent already_exists counts; keep the savepoint regardless to
+            # tolerate any future re-ordering or concurrent trigger.
+            new_match = Match(
+                home_team_id=home_id,
+                away_team_id=away_id,
+                league_id=league.id,
+                match_date=match_date,
+                kickoff_time=kickoff_time,
+                status="scheduled",
+                season=_current_season_str(),
+                stage=stage,
+                group_label=group_label,
             )
-            stats["seeded"] += 1
+            try:
+                with db.begin_nested():
+                    db.add(new_match)
+                    db.flush()
+                stats["seeded"] += 1
+            except IntegrityError:
+                stats["already_exists"] += 1
 
     try:
         db.commit()
