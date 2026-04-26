@@ -23,7 +23,7 @@ All endpoints return 404 if match_id not found.
 Pagination is not required for MVP (frontend shows 7-day windows).
 """
 
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -101,27 +101,101 @@ def _prediction_to_summary(pred: Optional[Prediction]) -> Optional[PredictionSum
 
 
 def _get_live_minute(home_name: str, away_name: str) -> Optional[str]:
-    """Look up the current match minute from the live score cache."""
+    """Look up the current match minute from the live score cache.
+
+    Cache entries come from ESPN/FD.org/API-Football, which use shorter
+    display names than our canonical DB names (ESPN says 'Marseille',
+    DB says 'Olympique de Marseille'). We do bidirectional substring
+    matching after suffix-stripping; the pair-wise constraint (BOTH
+    home AND away must match) is what stops "Real" from collapsing
+    Real Madrid / Real Sociedad / Real Betis into one match.
+    """
+    def _norm(s: Optional[str]) -> str:
+        return (
+            (s or "")
+            .replace(" FC", "")
+            .replace(" AFC", "")
+            .replace(" F.C.", "")
+            .strip()
+            .lower()
+        )
+
     try:
         from services.live_score_service import live_scores
-        db_home = home_name.replace(" FC", "").replace(" AFC", "").replace(" F.C.", "").strip()
-        db_away = away_name.replace(" FC", "").replace(" AFC", "").replace(" F.C.", "").strip()
+        db_home = _norm(home_name)
+        db_away = _norm(away_name)
+        if not db_home or not db_away:
+            return None
 
-        # Check all cache entries, prefer ones with a minute value
+        # Min length 4 keeps the substring check from matching too
+        # liberally (e.g. "AC" inside "PAC" or "Bay" inside "Bayern").
+        MIN_FUZZ_LEN = 4
+
+        def _names_match(cache_name: str, db_name: str) -> bool:
+            if cache_name == db_name:
+                return True
+            if len(cache_name) < MIN_FUZZ_LEN or len(db_name) < MIN_FUZZ_LEN:
+                return False
+            return cache_name in db_name or db_name in cache_name
+
+        # Prefer cache entries that actually carry a minute value.
         best_minute = None
         for m in live_scores._cache.values():
             if m.get("status") not in ("IN_PLAY", "HALFTIME"):
                 continue
-            cache_home = (m.get("home_team") or "").replace(" FC", "").replace(" AFC", "").replace(" F.C.", "").strip()
-            cache_away = (m.get("away_team") or "").replace(" FC", "").replace(" AFC", "").replace(" F.C.", "").strip()
-            if cache_home == db_home and cache_away == db_away:
+            cache_home = _norm(m.get("home_team"))
+            cache_away = _norm(m.get("away_team"))
+            if _names_match(cache_home, db_home) and _names_match(cache_away, db_away):
                 minute = m.get("minute")
                 if minute:
-                    return minute  # Found one with a minute — use it
-                best_minute = minute  # Keep looking for one with a minute
+                    return minute
+                best_minute = minute
         return best_minute
     except Exception:
         pass
+    return None
+
+
+def _compute_match_minute(kickoff_time: Optional[str], match_date) -> Optional[str]:
+    """Compute the current match minute from kickoff time and now (UTC).
+
+    Falls back to this when the in-memory cache lookup misses (Cloud Run's
+    per-instance cache means ~2/3 of requests hit a cold cache). Modelled
+    on a standard 90-min match flow:
+      - 0-45'      → first half (returns "12'" etc)
+      - 45'-60'    → ~15 min half-time break (returns "HT")
+      - 60'-105'   → second half (returns "{elapsed - 15}'", so 60→45, 105→90)
+      - 105'-120'  → 90+15 stoppage range (returns "90+{n}'")
+      - 120'+      → out-of-band; return None and let the score updater
+                     finalise the match
+    Accuracy is bounded by the user's poll cadence (60 s on the matches
+    page) — close enough for the LIVE ticker to match what users see on
+    Google's match card.
+    """
+    if not kickoff_time or not match_date:
+        return None
+    try:
+        h_str, m_str = kickoff_time.split(":")
+        kickoff_dt = datetime.combine(
+            match_date,
+            datetime.min.time(),
+            tzinfo=timezone.utc,
+        ).replace(hour=int(h_str), minute=int(m_str))
+    except (ValueError, AttributeError):
+        return None
+
+    elapsed_min = (datetime.now(timezone.utc) - kickoff_dt).total_seconds() / 60
+    if elapsed_min < 0:
+        return None
+
+    if elapsed_min <= 45:
+        return f"{int(elapsed_min)}'"
+    if elapsed_min < 60:
+        return "HT"
+    if elapsed_min <= 105:
+        return f"{int(elapsed_min - 15)}'"
+    if elapsed_min <= 120:
+        return f"90+{int(elapsed_min - 105)}'"
     return None
 
 
@@ -138,10 +212,19 @@ def _match_to_summary(
     home_name = home.canonical_name if home else f"Team {m.home_team_id}"
     away_name = away.canonical_name if away else f"Team {m.away_team_id}"
 
-    # Get live minute if match is in play
+    # Get live minute if match is in play. Try the in-memory cache (real
+    # ESPN minute, includes HT detection) first; fall back to a computed
+    # minute from kickoff_time + now so the ticker NEVER goes blank as
+    # long as the match is in 'live' status. Cloud Run runs up to 3
+    # instances and the cache is per-instance, so the cache lookup
+    # silently misses ~2/3 of the time — the computed fallback closes
+    # that gap and is accurate to within ~1 min.
     match_minute = None
     if m.status == "live":
-        match_minute = _get_live_minute(home_name, away_name)
+        match_minute = (
+            _get_live_minute(home_name, away_name)
+            or _compute_match_minute(m.kickoff_time, m.match_date)
+        )
 
     return MatchSummary(
         id=m.id,
