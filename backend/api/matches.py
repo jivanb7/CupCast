@@ -159,18 +159,21 @@ def _get_live_minute(home_name: str, away_name: str) -> Optional[str]:
 def _compute_match_minute(kickoff_time: Optional[str], match_date) -> Optional[str]:
     """Compute the current match minute from kickoff time and now (UTC).
 
-    Falls back to this when the in-memory cache lookup misses (Cloud Run's
-    per-instance cache means ~2/3 of requests hit a cold cache). Modelled
-    on a standard 90-min match flow:
+    Modelled on a standard 90-min flow:
       - 0-45'      → first half (returns "12'" etc)
       - 45'-60'    → ~15 min half-time break (returns "HT")
       - 60'-105'   → second half (returns "{elapsed - 15}'", so 60→45, 105→90)
       - 105'-120'  → 90+15 stoppage range (returns "90+{n}'")
       - 120'+      → out-of-band; return None and let the score updater
                      finalise the match
-    Accuracy is bounded by the user's poll cadence (60 s on the matches
-    page) — close enough for the LIVE ticker to match what users see on
-    Google's match card.
+
+    Why the 2-minute bias: scheduled kickoff is usually 1-3 min before the
+    actual whistle (broadcasters delay for ads / pre-match build-up). If
+    we report raw scheduled-elapsed we end up AHEAD of Google's clock,
+    which surprises users (they assume Google's number is the truth).
+    Shaving 2 min keeps us slightly *behind* Google in the worst case
+    (1-3 min broadcast delay) and exactly matched in the best case.
+    Floor at 1' so the badge never displays "0'" once status='live'.
     """
     if not kickoff_time or not match_date:
         return None
@@ -184,9 +187,14 @@ def _compute_match_minute(kickoff_time: Optional[str], match_date) -> Optional[s
     except (ValueError, AttributeError):
         return None
 
-    elapsed_min = (datetime.now(timezone.utc) - kickoff_dt).total_seconds() / 60
-    if elapsed_min < 0:
+    raw_elapsed = (datetime.now(timezone.utc) - kickoff_dt).total_seconds() / 60
+    if raw_elapsed < 0:
         return None
+
+    # 2-min broadcast-lag bias: keep us slightly behind Google rather
+    # than ahead. Floor at 1' so the badge always shows a number once
+    # the match is in 'live' status.
+    elapsed_min = max(1.0, raw_elapsed - 2.0)
 
     if elapsed_min <= 45:
         return f"{int(elapsed_min)}'"
