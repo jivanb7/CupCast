@@ -658,11 +658,20 @@ _ESPN_FINAL_STATUSES = {
 }
 
 
-def update_scores_from_espn(db: Session, run_id: Optional[str] = None) -> dict:
-    """Same-day score updater backed by ESPN's free scoreboard API.
+def update_scores_from_espn(
+    db: Session,
+    run_id: Optional[str] = None,
+    days_back: int = 1,
+) -> dict:
+    """Score updater backed by ESPN's free scoreboard API.
 
-    For each league we model:
-      1. Pull ESPN scoreboard (no auth, no quota).
+    For each (date, league) we model:
+      1. Pull ESPN scoreboard (no auth, no quota). When ``days_back > 0`` we
+         hit ``?dates=YYYYMMDD`` for today AND each prior day in the window
+         so prior-day finals that never updated (cron downtime, name-resolve
+         miss that's since been fixed, etc.) get backfilled too. Today
+         alone keeps the cost trivial; ``days_back=7`` is fine for a one-
+         shot rescue but wasteful as a steady-state cron value.
       2. For every event with a final-state status:
            - Resolve teams via fixture_seeder._resolve_team (cross-league
              fallback covers PSG/Atlético registered under 'ucl').
@@ -677,9 +686,15 @@ def update_scores_from_espn(db: Session, run_id: Optional[str] = None) -> dict:
     Idempotent: subsequent calls with unchanged scores are no-ops
     (skipped via the equality check before any UPDATE).
 
-    ``run_id`` (optional) groups any audit-log rows written by this pass
-    with the parent ``update_scores`` invocation. When called standalone
-    the function allocates its own.
+    Args:
+        db: SQLAlchemy session.
+        run_id: Optional. Groups any audit-log rows written by this pass
+            with the parent ``update_scores`` invocation. When called
+            standalone the function allocates its own.
+        days_back: Number of prior days to also scan with ``?dates=`` param.
+            ``0`` = today only (cheapest). ``1`` = today + yesterday (cron
+            default — catches matches that ended after the last full sweep).
+            ``N`` = today + last N days (use for one-shot backfill).
     """
     if run_id is None:
         run_id = _score_updater_run_id()
@@ -695,206 +710,217 @@ def update_scores_from_espn(db: Session, run_id: Optional[str] = None) -> dict:
     stats = {"updated": 0, "created": 0, "skipped": 0, "errors": 0}
     now_utc = datetime.now(timezone.utc)
 
+    # Build the scan window: [today, today-1, ..., today-days_back].
+    # Today is always scanned WITHOUT the dates param (matches the original
+    # behaviour, which is what ESPN's "live" data path returns most reliably);
+    # prior days use ``?dates=YYYYMMDD`` for explicit historical lookup.
+    today_utc = now_utc.date()
+    scan_dates: list[tuple[Optional[str], date]] = [(None, today_utc)]
+    for d in range(1, max(0, days_back) + 1):
+        target = today_utc - timedelta(days=d)
+        scan_dates.append((target.strftime("%Y%m%d"), target))
+
     for espn_slug, league_code in ESPN_LEAGUES.items():
         league = db.query(League).filter(League.code == league_code).first()
         if not league:
             continue
 
-        try:
-            resp = _session.get(
-                f"{ESPN_BASE}/{espn_slug}/scoreboard",
-                timeout=15,
-            )
-            if resp.status_code != 200:
-                logger.debug(
-                    "score_updater[espn:%s]: HTTP %d, skipping",
-                    espn_slug, resp.status_code,
-                )
-                continue
-            events = resp.json().get("events", [])
-        except Exception as exc:
-            logger.warning("score_updater[espn:%s]: fetch failed: %s", espn_slug, exc)
-            continue
-
-        for event in events:
-            comp = (event.get("competitions") or [{}])[0]
-            status_type = (
-                comp.get("status", {}).get("type", {}).get("name", "")
-            )
-            if status_type not in _ESPN_FINAL_STATUSES:
-                continue
-
-            competitors = comp.get("competitors", [])
-            home = next((t for t in competitors if t.get("homeAway") == "home"), {})
-            away = next((t for t in competitors if t.get("homeAway") == "away"), {})
-            if not home or not away:
-                continue
-
-            home_name = home.get("team", {}).get("displayName") or ""
-            away_name = away.get("team", {}).get("displayName") or ""
+        for dates_param, _scan_date in scan_dates:
+            url = f"{ESPN_BASE}/{espn_slug}/scoreboard"
+            params = {"dates": dates_param} if dates_param else None
             try:
-                home_goals = int(home.get("score", 0))
-                away_goals = int(away.get("score", 0))
-            except (TypeError, ValueError):
-                continue
-
-            event_date_iso = event.get("date", "")
-            event_date_str = event_date_iso[:10]
-            try:
-                event_date = datetime.strptime(event_date_str, "%Y-%m-%d").date()
-            except ValueError:
-                continue
-
-            home_id = _resolve_team(db, home_name, league_code)
-            away_id = _resolve_team(db, away_name, league_code)
-            if not home_id or not away_id:
-                logger.warning(
-                    "score_updater[espn:%s]: unresolved team(s) home=%r away=%r "
-                    "on %s — final score %d-%d not written",
-                    espn_slug, home_name, away_name, event_date_str,
-                    home_goals, away_goals,
-                )
-                stats["skipped"] += 1
-                continue
-
-            # Time guard. Use the event timestamp ESPN gave us as the
-            # kickoff anchor (more reliable than a maybe-NULL match.kickoff_time).
-            threshold_s = (
-                FULLTIME_MIN_AFTER_KICKOFF_CUP_S
-                if league_code in _CUP_LEAGUE_CODES
-                else FULLTIME_MIN_AFTER_KICKOFF_NORMAL_S
-            )
-            try:
-                event_dt = datetime.fromisoformat(event_date_iso.replace("Z", "+00:00"))
-                if (now_utc - event_dt).total_seconds() < threshold_s:
-                    # ESPN flipped to FINAL too soon — wait another tick.
+                resp = _session.get(url, params=params, timeout=15)
+                if resp.status_code != 200:
+                    logger.debug(
+                        "score_updater[espn:%s]: HTTP %d for dates=%s, skipping",
+                        espn_slug, resp.status_code, dates_param or "today",
+                    )
                     continue
-            except (ValueError, TypeError):
-                pass
-
-            result = "H" if home_goals > away_goals else ("A" if away_goals > home_goals else "D")
-
-            # Look for an existing match. Match is keyed by (home, away,
-            # league, date) which is exactly the uq_match_fixture columns
-            # we just shipped, so this lookup is index-backed and unique.
-            match = (
-                db.query(Match)
-                .filter(
-                    Match.home_team_id == home_id,
-                    Match.away_team_id == away_id,
-                    Match.league_id == league.id,
-                    Match.match_date == event_date,
+                events = resp.json().get("events", [])
+            except Exception as exc:
+                logger.warning(
+                    "score_updater[espn:%s]: fetch failed for dates=%s: %s",
+                    espn_slug, dates_param or "today", exc,
                 )
-                .first()
-            )
+                continue
 
-            if match is None:
-                # Missing-match path. Seeder dropped this row earlier
-                # (cross-league bug, name mismatch, ESPN-only league, etc.).
-                # Create it with the final score so the user sees the result
-                # right now instead of waiting for tomorrow's CSV.
-                kickoff_time = None
-                if "T" in event_date_iso and len(event_date_iso) >= 16:
-                    kickoff_time = event_date_iso[11:16]
-                new_match = Match(
-                    home_team_id=home_id,
-                    away_team_id=away_id,
-                    league_id=league.id,
-                    match_date=event_date,
-                    kickoff_time=kickoff_time,
-                    status="completed",
-                    home_goals=home_goals,
-                    away_goals=away_goals,
-                    result=result,
-                    season=_current_season_str(),
-                    updated_at=_utc_now_naive(),
+            for event in events:
+                comp = (event.get("competitions") or [{}])[0]
+                status_type = (
+                    comp.get("status", {}).get("type", {}).get("name", "")
+                )
+                if status_type not in _ESPN_FINAL_STATUSES:
+                    continue
+
+                competitors = comp.get("competitors", [])
+                home = next((t for t in competitors if t.get("homeAway") == "home"), {})
+                away = next((t for t in competitors if t.get("homeAway") == "away"), {})
+                if not home or not away:
+                    continue
+
+                home_name = home.get("team", {}).get("displayName") or ""
+                away_name = away.get("team", {}).get("displayName") or ""
+                try:
+                    home_goals = int(home.get("score", 0))
+                    away_goals = int(away.get("score", 0))
+                except (TypeError, ValueError):
+                    continue
+
+                event_date_iso = event.get("date", "")
+                event_date_str = event_date_iso[:10]
+                try:
+                    event_date = datetime.strptime(event_date_str, "%Y-%m-%d").date()
+                except ValueError:
+                    continue
+
+                home_id = _resolve_team(db, home_name, league_code)
+                away_id = _resolve_team(db, away_name, league_code)
+                if not home_id or not away_id:
+                    logger.warning(
+                        "score_updater[espn:%s]: unresolved team(s) home=%r away=%r "
+                        "on %s — final score %d-%d not written",
+                        espn_slug, home_name, away_name, event_date_str,
+                        home_goals, away_goals,
+                    )
+                    stats["skipped"] += 1
+                    continue
+
+                # Time guard. Use the event timestamp ESPN gave us as the
+                # kickoff anchor (more reliable than a maybe-NULL match.kickoff_time).
+                threshold_s = (
+                    FULLTIME_MIN_AFTER_KICKOFF_CUP_S
+                    if league_code in _CUP_LEAGUE_CODES
+                    else FULLTIME_MIN_AFTER_KICKOFF_NORMAL_S
                 )
                 try:
-                    with db.begin_nested():
-                        db.add(new_match)
-                        db.flush()
-                    stats["created"] += 1
-                    logger.info(
-                        "score_updater[espn:%s]: CREATED missing match %s %d-%d %s "
-                        "(%s) — back-filled from ESPN final",
-                        espn_slug, home_name, home_goals, away_goals, away_name,
-                        event_date_str,
-                    )
-                except IntegrityError:
-                    # Race with another writer — refetch and fall through to update path.
-                    match = (
-                        db.query(Match)
-                        .filter(
-                            Match.home_team_id == home_id,
-                            Match.away_team_id == away_id,
-                            Match.league_id == league.id,
-                            Match.match_date == event_date,
-                        )
-                        .first()
-                    )
-                    if match is None:
-                        stats["errors"] += 1
+                    event_dt = datetime.fromisoformat(event_date_iso.replace("Z", "+00:00"))
+                    if (now_utc - event_dt).total_seconds() < threshold_s:
+                        # ESPN flipped to FINAL too soon — wait another tick.
                         continue
-                else:
-                    # New row — nothing to reeval, predictions get evaluated below if any exist
+                except (ValueError, TypeError):
                     pass
 
-            if match is not None:
-                # Already-current short-circuit: spares us from rewriting
-                # 90% of rows on every cron tick.
-                if (
-                    match.status == "completed"
-                    and match.home_goals == home_goals
-                    and match.away_goals == away_goals
-                ):
-                    continue
+                result = "H" if home_goals > away_goals else ("A" if away_goals > home_goals else "D")
 
-                was_completed = match.status == "completed"
-                prev_home = match.home_goals
-                prev_away = match.away_goals
-                prev_result = match.result
-                is_correction = was_completed and (
-                    prev_home != home_goals
-                    or prev_away != away_goals
-                    or prev_result != result
+                # Look for an existing match. Match is keyed by (home, away,
+                # league, date) which is exactly the uq_match_fixture columns
+                # we just shipped, so this lookup is index-backed and unique.
+                match = (
+                    db.query(Match)
+                    .filter(
+                        Match.home_team_id == home_id,
+                        Match.away_team_id == away_id,
+                        Match.league_id == league.id,
+                        Match.match_date == event_date,
+                    )
+                    .first()
                 )
 
-                match.home_goals = home_goals
-                match.away_goals = away_goals
-                match.result = result
-                match.status = "completed"
-                match.updated_at = _utc_now_naive()
+                if match is None:
+                    # Missing-match path. Seeder dropped this row earlier
+                    # (cross-league bug, name mismatch, ESPN-only league, etc.).
+                    # Create it with the final score so the user sees the result
+                    # right now instead of waiting for tomorrow's CSV.
+                    kickoff_time = None
+                    if "T" in event_date_iso and len(event_date_iso) >= 16:
+                        kickoff_time = event_date_iso[11:16]
+                    new_match = Match(
+                        home_team_id=home_id,
+                        away_team_id=away_id,
+                        league_id=league.id,
+                        match_date=event_date,
+                        kickoff_time=kickoff_time,
+                        status="completed",
+                        home_goals=home_goals,
+                        away_goals=away_goals,
+                        result=result,
+                        season=_current_season_str(),
+                        updated_at=_utc_now_naive(),
+                    )
+                    try:
+                        with db.begin_nested():
+                            db.add(new_match)
+                            db.flush()
+                        stats["created"] += 1
+                        logger.info(
+                            "score_updater[espn:%s]: CREATED missing match %s %d-%d %s "
+                            "(%s) — back-filled from ESPN final",
+                            espn_slug, home_name, home_goals, away_goals, away_name,
+                            event_date_str,
+                        )
+                    except IntegrityError:
+                        # Race with another writer — refetch and fall through to update path.
+                        match = (
+                            db.query(Match)
+                            .filter(
+                                Match.home_team_id == home_id,
+                                Match.away_team_id == away_id,
+                                Match.league_id == league.id,
+                                Match.match_date == event_date,
+                            )
+                            .first()
+                        )
+                        if match is None:
+                            stats["errors"] += 1
+                            continue
 
-                predictions = (
-                    db.query(Prediction)
-                    .filter(Prediction.match_id == match.id)
-                    .all()
-                )
-                for pred in predictions:
-                    pred.was_correct = (pred.predicted_result == result)
+                if match is not None:
+                    # Already-current short-circuit: spares us from rewriting
+                    # 90% of rows on every cron tick.
+                    if (
+                        match.status == "completed"
+                        and match.home_goals == home_goals
+                        and match.away_goals == away_goals
+                    ):
+                        continue
 
-                if is_correction:
-                    _record_correction(
-                        db,
-                        match_id=match.id,
-                        before_home=prev_home,
-                        before_away=prev_away,
-                        before_result=prev_result,
-                        after_home=home_goals,
-                        after_away=away_goals,
-                        after_result=result,
-                        source="espn",
-                        predictions_reevaluated=len(predictions),
-                        run_id=run_id,
+                    was_completed = match.status == "completed"
+                    prev_home = match.home_goals
+                    prev_away = match.away_goals
+                    prev_result = match.result
+                    is_correction = was_completed and (
+                        prev_home != home_goals
+                        or prev_away != away_goals
+                        or prev_result != result
                     )
 
-                stats["updated"] += 1
-                logger.info(
-                    "score_updater[espn:%s]: %s %s %d-%d %s",
-                    espn_slug,
-                    "CORRECTED" if is_correction else "completed",
-                    home_name, home_goals, away_goals, away_name,
-                )
+                    match.home_goals = home_goals
+                    match.away_goals = away_goals
+                    match.result = result
+                    match.status = "completed"
+                    match.updated_at = _utc_now_naive()
+
+                    predictions = (
+                        db.query(Prediction)
+                        .filter(Prediction.match_id == match.id)
+                        .all()
+                    )
+                    for pred in predictions:
+                        pred.was_correct = (pred.predicted_result == result)
+
+                    if is_correction:
+                        _record_correction(
+                            db,
+                            match_id=match.id,
+                            before_home=prev_home,
+                            before_away=prev_away,
+                            before_result=prev_result,
+                            after_home=home_goals,
+                            after_away=away_goals,
+                            after_result=result,
+                            source="espn",
+                            predictions_reevaluated=len(predictions),
+                            run_id=run_id,
+                        )
+
+                    stats["updated"] += 1
+                    logger.info(
+                        "score_updater[espn:%s]: %s %s %d-%d %s (%s)",
+                        espn_slug,
+                        "CORRECTED" if is_correction else "completed",
+                        home_name, home_goals, away_goals, away_name,
+                        event_date_str,
+                    )
 
     try:
         db.commit()

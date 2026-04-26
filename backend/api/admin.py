@@ -178,20 +178,33 @@ def update_scores(
             "The full pass (CSV + Football-Data.org) still runs on its 2-hour cron."
         ),
     ),
+    days_back: int = Query(
+        1,
+        ge=0,
+        le=14,
+        description=(
+            "How many prior days the ESPN pass should also scan with ?dates="
+            "YYYYMMDD. Default 1 = today + yesterday — catches matches that "
+            "ended after the previous tick and any same-day update we missed. "
+            "Set higher (up to 14) for a one-shot backfill of stuck older "
+            "matches; this only affects the ESPN pass."
+        ),
+    ),
     _key: str = Depends(verify_admin_key),
     db: Session = Depends(get_db),
 ):
     """Fetch latest scores and update match results.
 
-    Default: full pass (ESPN + football-data.co.uk CSV + Football-Data.org API).
-    With ?espn_only=true: ESPN pass only (~10 s, no third-party quota).
+    Default: full pass (ESPN [today + yesterday] + football-data.co.uk CSV +
+    Football-Data.org API). With ?espn_only=true: ESPN pass only (~10 s,
+    no third-party quota).
     """
     if espn_only:
         from services.score_updater import update_scores_from_espn
 
         try:
-            stats = update_scores_from_espn(db)
-            return {"status": "done", "mode": "espn_only", **stats}
+            stats = update_scores_from_espn(db, days_back=days_back)
+            return {"status": "done", "mode": "espn_only", "days_back": days_back, **stats}
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"ESPN score update failed: {str(e)}")
 
