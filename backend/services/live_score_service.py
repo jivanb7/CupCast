@@ -636,6 +636,26 @@ class LiveScoreService:
                         if isinstance(db_name, str) and len(db_name) > 3:
                             if db_name.lower() in name_lower or name_lower in db_name.lower():
                                 return tid
+
+                    # Word-overlap matching — handles ESPN "Celta Vigo" vs DB
+                    # "Celta de Vigo" where neither side is a substring of the
+                    # other but the meaningful words overlap. Required token
+                    # length 3+ skips connector words (de, of, the, fc, ac).
+                    import re as _re
+                    name_words = set(_re.findall(r"\w{3,}", name_lower))
+                    if name_words:
+                        for db_name, tid in team_by_name.items():
+                            if not isinstance(db_name, str) or len(db_name) < 4:
+                                continue
+                            db_words = set(_re.findall(r"\w{3,}", db_name.lower()))
+                            if not db_words:
+                                continue
+                            # Strict subset check in either direction.
+                            # The pair-wise constraint (BOTH home AND away
+                            # must match a db_match row) prevents single-word
+                            # collisions like "Real" matching multiple teams.
+                            if name_words.issubset(db_words) or db_words.issubset(name_words):
+                                return tid
                     return None
 
                 today = date_type.today()
