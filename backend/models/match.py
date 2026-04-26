@@ -60,6 +60,11 @@ class Match(Base):
     is_neutral_venue = Column(Boolean, default=False)
     match_importance = Column(String(20))
     status = Column(String(20), default="completed")
+    # Live match clock straight from ESPN (e.g. "33'", "45'+2'", "HT", "67'+5'").
+    # Written by live_score_service._sync_to_db every minute while status='live';
+    # cleared back to NULL when the match finalises so the DB is the single
+    # source of truth across Cloud Run instances. NULL = match not in play.
+    current_minute = Column(String(10))
     # Tournament bracket columns — NULL for non-tournament matches
     stage = Column(String(20))              # 'group', 'r32', 'r16', 'qf', 'sf', 'final', '3rd-place'
     group_label = Column(String(2))         # 'A'–'L' for WC group stage

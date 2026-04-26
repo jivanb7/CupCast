@@ -717,8 +717,32 @@ class LiveScoreService:
                     # transition or when we're certain the game is still in play.
                     if is_finished:
                         db_match.status = "completed"
+                        # Match is over — clear the live ticker so completed
+                        # cards don't carry a stale "67'" badge.
+                        db_match.current_minute = None
                     elif not was_completed:
                         db_match.status = "live"
+
+                    # Persist ESPN's authoritative clock to DB (every Cloud
+                    # Run instance reads the same value — fixes the per-
+                    # instance cache staleness that made the ticker jump
+                    # around). For halftime we write a fixed "HT" so the
+                    # frontend doesn't show a misleading "45'+3'" while the
+                    # players are in the dressing room.
+                    if not is_finished:
+                        cache_status = live_match.get("status")
+                        cache_minute = live_match.get("minute")
+                        if cache_status == "HALFTIME":
+                            db_match.current_minute = "HT"
+                        elif cache_status in ("IN_PLAY", "PAUSED") and cache_minute:
+                            # Cache may store integer (FD.org) or string
+                            # like "33'" (ESPN). Normalise to a string with
+                            # trailing apostrophe so the frontend renders
+                            # consistently.
+                            mstr = str(cache_minute).strip()
+                            if mstr and not mstr.endswith("'") and "HT" not in mstr.upper():
+                                mstr = f"{mstr}'"
+                            db_match.current_minute = mstr or None
 
                     # Evaluate predictions only on the *transition* into completed.
                     # Combined with the time guard above, this ensures the "Correct"/

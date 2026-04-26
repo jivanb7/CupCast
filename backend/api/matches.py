@@ -220,27 +220,22 @@ def _match_to_summary(
     home_name = home.canonical_name if home else f"Team {m.home_team_id}"
     away_name = away.canonical_name if away else f"Team {m.away_team_id}"
 
-    # Get live minute if match is in play. Strategy:
-    #   1. Computed minute (kickoff + wall clock) is the PRIMARY source.
-    #      It's deterministic, ticks every wall-clock minute, and is the
-    #      same answer on every Cloud Run instance.
-    #   2. Cache lookup is used ONLY to override with "HT" when ESPN
-    #      reports half-time (the computed value can't tell HT apart
-    #      from the 45'-60' window).
-    #
-    # Why not "cache wins": Cloud Run runs up to 3 instances and the
-    # live_scores cache is per-instance, in-memory. The 1-min cron only
-    # populates one instance per tick, so 2/3 of API requests hit a
-    # cold/stale cache. That manifested as "AC Milan stuck at 11'" while
-    # ESPN was at 18' — the user was hitting an instance whose cache had
-    # an older poll. Computed minute removes that whole class of bug.
+    # Live minute resolution order (only when status='live'):
+    #   1. m.current_minute from DB — written by live_score_service every 60 s
+    #      from ESPN's authoritative clock. Same value across all Cloud Run
+    #      instances. This is the source of truth.
+    #   2. In-memory cache fallback — covers the brief gap between status
+    #      flipping to 'live' and the next live-sync tick writing the column.
+    #   3. Computed from kickoff + wall clock — last-resort fallback so the
+    #      ticker is never blank. 2-min broadcast lag bias keeps it slightly
+    #      behind Google rather than ahead.
     match_minute = None
     if m.status == "live":
-        cache_minute = _get_live_minute(home_name, away_name)
-        if cache_minute == "HT":
-            match_minute = "HT"
-        else:
-            match_minute = _compute_match_minute(m.kickoff_time, m.match_date)
+        match_minute = (
+            m.current_minute
+            or _get_live_minute(home_name, away_name)
+            or _compute_match_minute(m.kickoff_time, m.match_date)
+        )
 
     return MatchSummary(
         id=m.id,
