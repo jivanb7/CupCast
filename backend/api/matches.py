@@ -212,19 +212,27 @@ def _match_to_summary(
     home_name = home.canonical_name if home else f"Team {m.home_team_id}"
     away_name = away.canonical_name if away else f"Team {m.away_team_id}"
 
-    # Get live minute if match is in play. Try the in-memory cache (real
-    # ESPN minute, includes HT detection) first; fall back to a computed
-    # minute from kickoff_time + now so the ticker NEVER goes blank as
-    # long as the match is in 'live' status. Cloud Run runs up to 3
-    # instances and the cache is per-instance, so the cache lookup
-    # silently misses ~2/3 of the time — the computed fallback closes
-    # that gap and is accurate to within ~1 min.
+    # Get live minute if match is in play. Strategy:
+    #   1. Computed minute (kickoff + wall clock) is the PRIMARY source.
+    #      It's deterministic, ticks every wall-clock minute, and is the
+    #      same answer on every Cloud Run instance.
+    #   2. Cache lookup is used ONLY to override with "HT" when ESPN
+    #      reports half-time (the computed value can't tell HT apart
+    #      from the 45'-60' window).
+    #
+    # Why not "cache wins": Cloud Run runs up to 3 instances and the
+    # live_scores cache is per-instance, in-memory. The 1-min cron only
+    # populates one instance per tick, so 2/3 of API requests hit a
+    # cold/stale cache. That manifested as "AC Milan stuck at 11'" while
+    # ESPN was at 18' — the user was hitting an instance whose cache had
+    # an older poll. Computed minute removes that whole class of bug.
     match_minute = None
     if m.status == "live":
-        match_minute = (
-            _get_live_minute(home_name, away_name)
-            or _compute_match_minute(m.kickoff_time, m.match_date)
-        )
+        cache_minute = _get_live_minute(home_name, away_name)
+        if cache_minute == "HT":
+            match_minute = "HT"
+        else:
+            match_minute = _compute_match_minute(m.kickoff_time, m.match_date)
 
     return MatchSummary(
         id=m.id,
