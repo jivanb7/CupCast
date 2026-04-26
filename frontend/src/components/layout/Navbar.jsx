@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { NavLink } from 'react-router-dom'
 import { Menu, X, Trophy, TrendingUp, BarChart3, Globe, Info } from 'lucide-react'
+import ThemeToggle from './ThemeToggle'
 
 const NAV_LINKS = [
   { to: '/matches', label: 'Matches', icon: Trophy },
@@ -13,7 +14,7 @@ export default function Navbar() {
   const [menuOpen, setMenuOpen] = useState(false)
 
   return (
-    <nav className="fixed top-0 left-0 right-0 z-50 cc-glass border-b border-white/5">
+    <nav className="cc-nav fixed top-0 left-0 right-0 z-50">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
         <div className="flex items-center justify-between h-16">
           {/* Logo */}
@@ -49,6 +50,12 @@ export default function Navbar() {
                 )}
               </NavLink>
             ))}
+            <span
+              className="mx-1 h-5 w-px"
+              style={{ background: 'var(--nav-divider)' }}
+              aria-hidden="true"
+            />
+            <ThemeToggle />
           </div>
 
           {/* Mobile hamburger */}
@@ -65,7 +72,10 @@ export default function Navbar() {
 
         {/* Mobile menu */}
         {menuOpen && (
-          <div className="md:hidden border-t border-white/5 py-2 pb-4">
+          <div
+            className="md:hidden py-2 pb-4 border-t"
+            style={{ borderColor: 'var(--nav-border)' }}
+          >
             {NAV_LINKS.map((link) => {
               const Icon = link.icon
               return (
@@ -87,6 +97,10 @@ export default function Navbar() {
                 </NavLink>
               )
             })}
+            <div className="mt-2 pt-2 border-t border-white/5 px-3 flex items-center justify-between">
+              <span className="text-xs text-foreground-muted uppercase tracking-widest">Theme</span>
+              <ThemeToggle />
+            </div>
           </div>
         )}
       </div>

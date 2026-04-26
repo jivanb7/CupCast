@@ -9,12 +9,15 @@ export default {
       colors: {
         deep: '#020617',
         base: '#0F172A',
-        elevated: '#1E293B',
-        card: '#0E1223',
-        surface: 'rgba(255,255,255,0.05)',
+        elevated: 'var(--surface-elevated)',
+        card: 'var(--surface-card)',
+        surface: 'var(--surface-soft)',
+        // foreground/border read from CSS vars so they invert with the theme.
+        // Without this, every `text-foreground` literal (#F8FAFC) became
+        // unreadable in day mode (white text on light bg).
         foreground: {
-          DEFAULT: '#F8FAFC',
-          muted: '#94A3B8',
+          DEFAULT: 'var(--content-text)',
+          muted: 'var(--content-text-muted)',
         },
         accent: {
           gold: '#F59E0B',
@@ -25,7 +28,7 @@ export default {
           amber: '#FBBF24',
         },
         border: {
-          DEFAULT: '#334155',
+          DEFAULT: 'var(--surface-border)',
           glow: 'rgba(245,158,11,0.15)',
         },
         ring: '#F59E0B',

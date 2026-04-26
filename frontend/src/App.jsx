@@ -1,9 +1,11 @@
 import { lazy, Suspense } from 'react'
-import { Routes, Route } from 'react-router-dom'
+import { Routes, Route, useLocation } from 'react-router-dom'
 import Navbar from './components/layout/Navbar'
 import Footer from './components/layout/Footer'
 import LoadingSpinner from './components/ui/LoadingSpinner'
 import Dashboard from './pages/Dashboard'
+import { ThemeProvider } from './context/ThemeContext'
+import useLenisScroll from './hooks/useLenisScroll'
 
 const MatchDetail = lazy(() => import('./pages/MatchDetail'))
 const Matches = lazy(() => import('./pages/Matches'))
@@ -20,11 +22,15 @@ function PageFallback() {
   )
 }
 
-export default function App() {
+function AppShell() {
+  useLenisScroll()
+  // Dashboard is meant to be a single-screen landing — no footer, no scroll.
+  // Other routes still get the full disclaimer footer.
+  const isDashboard = useLocation().pathname === '/'
   return (
-    <div className="min-h-screen bg-deep text-foreground flex flex-col">
+    <div className="min-h-screen cc-app-bg text-foreground flex flex-col relative">
       <Navbar />
-      <main className="flex-1">
+      <main className="flex-1 relative">
         <Suspense fallback={<PageFallback />}>
           <Routes>
             <Route path="/" element={<Dashboard />} />
@@ -37,7 +43,15 @@ export default function App() {
           </Routes>
         </Suspense>
       </main>
-      <Footer />
+      {!isDashboard && <Footer />}
     </div>
+  )
+}
+
+export default function App() {
+  return (
+    <ThemeProvider>
+      <AppShell />
+    </ThemeProvider>
   )
 }
