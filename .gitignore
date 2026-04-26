@@ -57,3 +57,16 @@ rodrigo/
 noam/
 # Superpowers brainstorming mockups
 .superpowers/
+
+# Local-only docs that belong in the Obsidian vault, not the public repo
+docs/
+
+# MCP / tooling caches that should never be pushed
+.cloud/
+.cache/
+.playwright-mcp/
+
+# Verification screenshots taken during dev — never check these in
+/cupcast-*.png
+/dashboard-*.png
+/page-*.png
