@@ -169,15 +169,37 @@ def scores_health(db: Session = Depends(get_db)):
 
 @router.post("/scores/update")
 def update_scores(
+    espn_only: bool = Query(
+        False,
+        description=(
+            "When true, run only the ESPN scoreboard pass. ESPN is keyless and "
+            "quota-free, so this endpoint can safely be cron'd every 5 min to "
+            "close the gap between match end and the user seeing the final score. "
+            "The full pass (CSV + Football-Data.org) still runs on its 2-hour cron."
+        ),
+    ),
     _key: str = Depends(verify_admin_key),
     db: Session = Depends(get_db),
 ):
-    """Fetch latest scores from football-data.co.uk and update match results."""
+    """Fetch latest scores and update match results.
+
+    Default: full pass (ESPN + football-data.co.uk CSV + Football-Data.org API).
+    With ?espn_only=true: ESPN pass only (~10 s, no third-party quota).
+    """
+    if espn_only:
+        from services.score_updater import update_scores_from_espn
+
+        try:
+            stats = update_scores_from_espn(db)
+            return {"status": "done", "mode": "espn_only", **stats}
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"ESPN score update failed: {str(e)}")
+
     from services.score_updater import update_scores as do_update
 
     try:
         stats = do_update(db)
-        return {"status": "done", **stats}
+        return {"status": "done", "mode": "full", **stats}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Score update failed: {str(e)}")
 

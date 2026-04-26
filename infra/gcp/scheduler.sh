@@ -5,14 +5,20 @@
 # Cloud Scheduler job definitions for the CupCast backend.
 #
 # This file is the single source of truth for what cron jobs hit the prod
-# Cloud Run service. Six jobs in total:
+# Cloud Run service. Seven jobs in total:
 #
-#   1. cupcast-update-scores       — every 2 h     — pulls latest scores (CSV + live API)
-#   2. cupcast-refresh-odds        — every 4 h     — refreshes bookmaker odds + value picks
-#   3. cupcast-seed-fixtures       — daily 10:00 UTC — seeds upcoming fixtures
-#   4. cupcast-generate-predictions— daily 10:30 UTC — runs batch inference
-#   5. cupcast-refresh-players     — daily 05:00 UTC — top-scorers + injuries
-#   6. cupcast-revalidate-scores   — every 6 h     — cross-checks completed scores
+#   1. cupcast-update-scores-fast  — every 5 min   — ESPN-only pass; closes the
+#                                                    gap between a match ending
+#                                                    and the final score showing
+#                                                    on the site (was up to 2 h
+#                                                    before this job existed —
+#                                                    Real-Oviedo class of bug)
+#   2. cupcast-update-scores       — every 2 h     — full pass: ESPN + CSV + live API
+#   3. cupcast-refresh-odds        — every 4 h     — refreshes bookmaker odds + value picks
+#   4. cupcast-seed-fixtures       — daily 10:00 UTC — seeds upcoming fixtures
+#   5. cupcast-generate-predictions— daily 10:30 UTC — runs batch inference
+#   6. cupcast-refresh-players     — daily 05:00 UTC — top-scorers + injuries
+#   7. cupcast-revalidate-scores   — every 6 h     — cross-checks completed scores
 #                                                    against API-Football and
 #                                                    rewrites any silently-wrong
 #                                                    final scores (Real-Betis bug)
@@ -108,13 +114,28 @@ echo "  region  : ${REGION}"
 echo "  backend : ${BACKEND_URL}"
 echo "==============================================================="
 
-# 1. Score updates — every 2 h, covers in-progress matches and finalisation
+# 1a. Fast ESPN-only score updates — every 5 min.
+#     Closes the user-visible gap: a match that ends at 16:15 UTC used to
+#     wait until the next 2-hourly tick (18:00 UTC) before the final score
+#     replaced the pre-match prediction card. ESPN is keyless and has no
+#     quota, so 5-min cadence is safe. The endpoint is idempotent — repeated
+#     calls with unchanged scores are no-ops via an equality short-circuit.
+upsert_job \
+    "cupcast-update-scores-fast" \
+    "*/5 * * * *" \
+    "${BACKEND_URL}/api/v1/admin/scores/update?espn_only=true" \
+    "POST" \
+    "ESPN-only same-day score sweep — closes the post-match update gap."
+
+# 1b. Full score sweep — every 2 h, covers football-data CSV + Football-Data.org
+#     live API in addition to ESPN. Slower (~90 s) so kept on a longer cadence;
+#     the 5-min ESPN job above handles same-day finals.
 upsert_job \
     "cupcast-update-scores" \
     "0 */2 * * *" \
     "${BACKEND_URL}/api/v1/admin/scores/update" \
     "POST" \
-    "Pull latest scores (football-data CSV + live API) and update DB."
+    "Full score sweep (ESPN + football-data CSV + Football-Data.org)."
 
 # 2. Odds refresh — every 4 h, recomputes value-pick edges
 upsert_job \

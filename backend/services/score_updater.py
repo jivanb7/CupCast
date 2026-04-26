@@ -31,6 +31,7 @@ import requests
 
 # Module-level Session for connection pooling across scheduler job invocations
 _session = requests.Session()
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 logger = logging.getLogger(__name__)
@@ -627,8 +628,9 @@ def update_scores_from_live_api(db: Session, run_id: Optional[str] = None) -> di
 # Football-Data.org API (10 req/min). Critically: when ESPN reports a
 # match FINISHED that we never seeded (e.g. seeder missed the team-name
 # resolution earlier in the day), we CREATE the row instead of dropping
-# it on the floor. Triggered by Cloud Scheduler hitting /admin/scores/update
-# every 2 min during match windows.
+# it on the floor. Triggered by Cloud Scheduler hitting
+# /admin/scores/update?espn_only=true every 5 min — the full-pass cron
+# at 0 */2 * * * keeps the CSV / FD.org passes in the loop too.
 # ----------------------------------------------------------------------
 
 ESPN_BASE = "https://site.api.espn.com/apis/site/v2/sports/soccer"
