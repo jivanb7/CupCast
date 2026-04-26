@@ -46,10 +46,18 @@ FOOTBALL_DATA_UK_BASE = "https://www.football-data.co.uk/mmz4281"
 COMPLETED_RECHECK_WINDOW = timedelta(hours=6)
 
 # Minimum minutes after kickoff before we trust a 'FINISHED' signal.
-#  - regular league match: 90' + 15' stoppage/HT = 105 min
-#  - cup-style match (UCL knockouts, World Cup KO): may go to ET + pens, allow 130 min
+#  - regular league match: 90' + 15' stoppage = 105 min. Covers even the
+#    extreme stoppage games (10-15 min added time after multiple injuries
+#    or VAR reviews); ESPN won't flip to FULL_TIME until the actual final
+#    whistle anyway, this is just a floor against premature FINISHED signals.
+#  - cup-style match (UCL knockouts, World Cup KO): may go to ET + pens.
+#    Worst-case timeline: 90 reg + 15 stoppage + 5 break + 30 ET + 5 ET
+#    stoppage + 5 break + 10 pens ≈ 160 min. We pick 150 as the guard:
+#    covers the realistic ET-without-pens window and the rare ET+pens
+#    marathon catches on the next 5-min ESPN tick (max user-visible
+#    delay = 10 min after final whistle).
 FULLTIME_MIN_AFTER_KICKOFF_NORMAL_S = 105 * 60
-FULLTIME_MIN_AFTER_KICKOFF_CUP_S = 130 * 60
+FULLTIME_MIN_AFTER_KICKOFF_CUP_S = 150 * 60
 
 # League codes whose matches can extend to extra time + penalties. Detection is
 # coarse (group-stage WC games can't go to ET, but the cost of waiting an extra
@@ -649,12 +657,21 @@ ESPN_LEAGUES = {
 
 # ESPN status tokens that mean "the result is final and trustworthy".
 # AET/PEN are cup-only but we accept them across the board — the time
-# guard below stops us trusting them too early either way.
+# guard above stops us trusting them too early either way.
+#
+# NOT included on purpose:
+#   STATUS_END_OF_REGULATION — transient state at the 90-min whistle of a
+#     cup match that's about to enter ET. Trusting it would lock in the
+#     regulation score (typically 0-0 or a draw — that's why ET is being
+#     played) and miss the ET / penalty result. The actual final lands as
+#     STATUS_FINAL_AET or STATUS_FINAL_PEN within ~30-60 min, captured by
+#     the next 5-min ESPN tick.
+#   STATUS_END_OF_EXTRATIME, STATUS_PENALTY_SHOOTOUT — same reasoning,
+#     these are transitional. Wait for STATUS_FINAL_*.
 _ESPN_FINAL_STATUSES = {
     "STATUS_FULL_TIME",
     "STATUS_FINAL_AET",
     "STATUS_FINAL_PEN",
-    "STATUS_END_OF_REGULATION",
 }
 
 
