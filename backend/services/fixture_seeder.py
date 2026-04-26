@@ -22,6 +22,7 @@ from typing import Optional
 
 import pandas as pd
 import requests
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 logger = logging.getLogger(__name__)
@@ -129,6 +130,25 @@ def _resolve_team(db: Session, team_name: str, league_code: str) -> Optional[int
         if sn and (name_lower in sn or sn in name_lower):
             return t.id
 
+    # Last-resort cross-league exact match (only for domestic-league lookups).
+    # PSG/Atlético Madrid are registered under 'ucl' but play their domestic league
+    # weekly — without this, every PSG Ligue 1 / Atlético La Liga fixture got
+    # silently dropped by the seeder. We restrict to exact canonical_name to
+    # avoid false matches; collisions across leagues should be rare and the
+    # INFO log surfaces them so we can fix the team's league_id properly.
+    if not cross_league:
+        other = db.query(Team).filter(Team.canonical_name == team_name).first()
+        if other:
+            other_league = db.query(League).filter(League.id == other.league_id).first()
+            logger.info(
+                "fixture_seeder: cross-league fallback resolved '%s' (registered in league=%s, "
+                "requested for league=%s) — consider adding the team to %s in DB",
+                team_name,
+                other_league.code if other_league else other.league_id,
+                league_code, league_code,
+            )
+            return other.id
+
     logger.debug("Could not resolve team '%s' in league '%s'", team_name, league_code)
     return None
 
@@ -203,6 +223,16 @@ def seed_from_football_data_org(db: Session) -> dict:
             away_id = _resolve_team(db, away_name, db_league_code)
 
             if not home_id or not away_id:
+                # Loud skip: prior to 2026-04-25 this was a silent counter,
+                # which let an entire team's fixtures (e.g. PSG in ligue1, only
+                # registered under 'ucl') get dropped without anyone noticing
+                # for weeks. Surface the skip with enough detail to reproduce.
+                logger.warning(
+                    "fixture_seeder: SKIP %s vs %s on %s in league=%s "
+                    "(home_resolved=%s, away_resolved=%s) — fixture not seeded",
+                    home_name, away_name, match_date_str, db_league_code,
+                    bool(home_id), bool(away_id),
+                )
                 stats["skipped"] += 1
                 continue
 
@@ -221,7 +251,10 @@ def seed_from_football_data_org(db: Session) -> dict:
                 stats["already_exists"] += 1
                 continue
 
-            # Create new scheduled match
+            # Create new scheduled match. Wrap the flush in a SAVEPOINT so a
+            # race against another concurrent seeder (or a fast double-trigger
+            # of the cron) trips the uq_match_fixture UC without rolling back
+            # the whole batch — we just count it as already_exists and move on.
             new_match = Match(
                 home_team_id=home_id,
                 away_team_id=away_id,
@@ -231,13 +264,13 @@ def seed_from_football_data_org(db: Session) -> dict:
                 status="scheduled",
                 season=_current_season_str(),
             )
-
-            # Add odds if available
-            bookmakers = m.get("odds", {}).get("homeWin")
-            # Football-Data.org v4 doesn't always include odds in match list
-
-            db.add(new_match)
-            stats["seeded"] += 1
+            try:
+                with db.begin_nested():
+                    db.add(new_match)
+                    db.flush()
+                stats["seeded"] += 1
+            except IntegrityError:
+                stats["already_exists"] += 1
 
         # Rate limit: 10 req/min on free tier
         time.sleep(7)
@@ -322,8 +355,13 @@ def seed_from_fixtures_csv(db: Session) -> dict:
             status="scheduled",
             season=_current_season_str(),
         )
-        db.add(new_match)
-        stats["seeded"] += 1
+        try:
+            with db.begin_nested():
+                db.add(new_match)
+                db.flush()
+            stats["seeded"] += 1
+        except IntegrityError:
+            stats["already_exists"] += 1
 
     try:
         db.commit()
