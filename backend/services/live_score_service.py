@@ -898,6 +898,28 @@ class LiveScoreService:
                     .all()
                 )
                 teams_by_id = {t.id: t for t in all_teams}
+
+                # Word-overlap checker shared with _find_team — needed here
+                # too so a Villarreal-vs-Celta-de-Vigo DB row that ESPN is
+                # broadcasting as "Villarreal" / "Celta Vigo" doesn't get
+                # falsely finalised on the next sync. Without this the stale
+                # cleanup compares the DB canonical to the cache short name
+                # via plain substring, which silently fails for "X de Y"
+                # (e.g. ESPN "Celta Vigo" is NOT a substring of "Celta de
+                # Vigo" and vice-versa).
+                import re as _re_words
+
+                def _names_overlap(a: str, b: str) -> bool:
+                    if not a or not b:
+                        return False
+                    if a in b or b in a:
+                        return True
+                    aw = set(_re_words.findall(r"\w{3,}", a))
+                    bw = set(_re_words.findall(r"\w{3,}", b))
+                    if not aw or not bw:
+                        return False
+                    return aw.issubset(bw) or bw.issubset(aw)
+
                 for stale in stale_live:
                     # Check if this match is still actively live in cache by team name (not score)
                     stale_home = teams_by_id.get(stale.home_team_id)
@@ -911,8 +933,7 @@ class LiveScoreService:
                             continue
                         cache_h = (m.get("home_team") or "").lower().replace(" fc", "").replace(" afc", "").strip()
                         cache_a = (m.get("away_team") or "").lower().replace(" fc", "").replace(" afc", "").strip()
-                        if ((stale_h_name in cache_h or cache_h in stale_h_name) and
-                            (stale_a_name in cache_a or cache_a in stale_a_name)):
+                        if _names_overlap(stale_h_name, cache_h) and _names_overlap(stale_a_name, cache_a):
                             still_live = True
                             break
                     if not still_live:
