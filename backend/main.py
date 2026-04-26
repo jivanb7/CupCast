@@ -171,26 +171,35 @@ async def lifespan(app: FastAPI):
     if api_football_keys:
         init_rotator(api_football_keys)
 
-    # Auto-start live score polling if any API key is configured.
-    # Production: skipped. In-process polling doesn't survive Cloud Run scale-to-zero
-    # and duplicates across concurrent instances. Cloud Scheduler drives
-    # /admin/scores/update every 2 min during match windows instead
-    # (see infra/gcp/scheduler.sh).
+    # Live score polling.
+    # Always call configure() so the singleton has API keys ready — both prod
+    # and dev need this for the /admin/scores/live-sync endpoint to work.
+    # Only the background polling THREAD differs:
+    #   - dev: start the thread (10s poll, in-process), so local devs see live
+    #     updates without standing up Cloud Scheduler.
+    #   - prod: thread skipped (doesn't survive Cloud Run scale-to-zero, would
+    #     duplicate across concurrent instances). Cloud Scheduler hits
+    #     /admin/scores/live-sync every 1 min instead — that endpoint runs ONE
+    #     ESPN poll + DB sync per call, which is exactly what writes the
+    #     status='live' + minute + current score that the frontend renders.
     from services.live_score_service import live_scores
-    if _is_prod:
-        logger.info("Live score polling skipped (prod — Cloud Scheduler handles this)")
-    else:
-        try:
-            has_api_football = bool(api_football_keys)
-            if settings.football_data_org_api_key or has_api_football:
-                live_scores.configure(
-                    api_key=settings.football_data_org_api_key,
-                    poll_interval=10,
-                    use_api_football_rotator=has_api_football,
+    try:
+        has_api_football = bool(api_football_keys)
+        if settings.football_data_org_api_key or has_api_football:
+            live_scores.configure(
+                api_key=settings.football_data_org_api_key,
+                poll_interval=10,
+                use_api_football_rotator=has_api_football,
+            )
+            if _is_prod:
+                logger.info(
+                    "Live score singleton configured; in-process polling thread "
+                    "skipped (Cloud Scheduler drives /admin/scores/live-sync)"
                 )
+            else:
                 live_scores.start()
-        except Exception as e:
-            logger.error("Live score polling failed to start: %s — continuing without live scores", e)
+    except Exception as e:
+        logger.error("Live score polling setup failed: %s — continuing without live scores", e)
 
     yield
 

@@ -217,6 +217,58 @@ def update_scores(
         raise HTTPException(status_code=500, detail=f"Score update failed: {str(e)}")
 
 
+@router.post("/scores/live-sync")
+def live_sync(_key: str = Depends(verify_admin_key)):
+    """One-shot live-score poll + DB sync.
+
+    Cron'd every minute by Cloud Scheduler so in-progress matches show
+    status='live', the current minute, and the running score on the
+    frontend (the existing pre-match prediction card flips into a live
+    card the moment status='live' lands in the DB).
+
+    Calls ESPN (no key, no quota) and Football-Data.org (10 req/min) into
+    the live_scores singleton's in-memory cache, then runs _sync_to_db()
+    which writes home_goals/away_goals + status='live' for matches in
+    play and finalises any stale 'live' rows that ended without a
+    FINISHED signal. Idempotent — repeated calls on unchanged scores
+    are no-ops.
+    """
+    from services.live_score_service import live_scores
+
+    import logging
+    log = logging.getLogger(__name__)
+
+    try:
+        # Populate cache from both sources (FD.org + ESPN). Both are
+        # safe to call sequentially; total work ≈ 1.5 s.
+        try:
+            live_scores._do_poll()  # FD.org — quota-bounded, no-op if no key
+        except Exception as exc:
+            log.warning("live-sync: FD.org poll failed: %s", exc)
+        try:
+            live_scores._do_poll_espn()  # ESPN — keyless, no quota
+        except Exception as exc:
+            log.warning("live-sync: ESPN poll failed: %s", exc)
+
+        # Now write whatever's in cache to the DB (status='live' + scores
+        # + minute for in-play games; finalise stale 'live' rows that
+        # the cache no longer sees).
+        live_scores._sync_to_db()
+
+        cache_size = len(live_scores._cache)
+        live_count = sum(
+            1 for m in live_scores._cache.values()
+            if m.get("status") in ("IN_PLAY", "HALFTIME", "PAUSED")
+        )
+        return {
+            "status": "done",
+            "cache_size": cache_size,
+            "in_play": live_count,
+        }
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Live sync failed: {exc}")
+
+
 @router.post("/scores/revalidate")
 def revalidate_scores(
     days: int = Query(2, ge=1, le=7),
