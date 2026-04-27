@@ -77,8 +77,14 @@ jobs:
 
       - uses: google-github-actions/setup-gcloud@v2
 
-      - name: Install ML dependencies
-        run: pip install -r ml/requirements.txt
+      - name: Install ML + backend dependencies
+        # Backend deps (pydantic_settings, FastAPI, etc.) are needed by
+        # scripts/refresh_and_export_player_features.py which imports
+        # backend.services.player_availability_service. Without them
+        # that step crashed on `from pydantic_settings import …` and
+        # fell back silently (continue-on-error) so injury/availability
+        # data was empty for training.
+        run: pip install -r ml/requirements.txt -r backend/requirements.txt
 
       - name: Configure Kaggle credentials
         run: |
