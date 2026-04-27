@@ -79,17 +79,14 @@ DB_TO_ML_LEAGUE = {
     "ligue1": "F1", "ucl": "UCL",
 }
 
-# Top-5 specialist routing is currently disabled. The registered
-# `cupcast-club-top5-model` is a stale bootstrap from Mar 2026 — plain
-# RandomForest trained on 76 features, missing the Elo / league-rank /
-# season-PPG / key-player-availability features the general `cupcast-club-
-# model` v7 (87 features, CalibratedClassifierCV+RF) consumes. Routing big-
-# club matches like Bayern–Heidenheim through that stale model produces
-# near-flat 33/33/33 distributions that don't reflect the team-strength
-# signal we now train on. Until the top-5 specialist is retrained on the
-# current feature pipeline, route every club match through the general
-# model. Re-enable this set (or replace with retrained codes) once the
-# top-5 model is rebuilt.
+# Top-5 specialist routing. The training pipeline (ml/run_pipeline.py →
+# run_training("club_top5")) now retrains cupcast-club-top5-model on the
+# same 87-feature schema as the general cupcast-club-model on every run.
+# This set is left empty until the next pipeline execution promotes a
+# fresh 87-feature specialist; flip it back to {"E0","SP1","I1","D1",
+# "F1","UCL"} once that promotion has been verified. While empty, all
+# club matches go through the general 87-feature model — same feature
+# space, same architecture, just no Big-5-only specialization.
 TOP5_ML_CODES: set[str] = set()
 
 # Module-level model cache
@@ -448,6 +445,30 @@ def generate_batch_predictions(db) -> int:
     )
 
     # ── Step 1: Build dummy rows for club-path matches only ──
+    # Pre-fetch existing predictions for all scheduled matches in one query
+    # so we can pull stored bookmaker odds (odds_home/draw/away) onto the
+    # dummy feature row. The trained model leans on odds_* + implied_prob_*
+    # for ~25% of its total feature importance — when those are null at
+    # predict time the model loses its strongest signal and collapses
+    # toward 33/33/33 even on lopsided fixtures (e.g., Bayern–Heidenheim
+    # at 1.20 vs 13.00 was being called for Heidenheim because the model
+    # never saw the market). The odds rows are populated separately by
+    # services/odds_service after the first prediction generation, so on
+    # second-run regen we can finally feed them back in.
+    _odds_match_ids = [m.id for m in scheduled]
+    _existing_odds_rows = (
+        db.query(Prediction.match_id, Prediction.odds_home,
+                 Prediction.odds_draw, Prediction.odds_away)
+        .filter(Prediction.match_id.in_(_odds_match_ids))
+        .all()
+        if _odds_match_ids
+        else []
+    )
+    odds_by_match: dict[int, tuple[float | None, float | None, float | None]] = {
+        row.match_id: (row.odds_home, row.odds_draw, row.odds_away)
+        for row in _existing_odds_rows
+    }
+
     upcoming_rows = []
     match_index_map = {}  # maps position in upcoming_rows → Match ORM object
 
@@ -468,6 +489,8 @@ def generate_batch_predictions(db) -> int:
 
         ml_league_code = DB_TO_ML_LEAGUE.get(db_league_code, "E0")
 
+        oh, od, oa = odds_by_match.get(match.id, (None, None, None))
+
         upcoming_rows.append({
             "match_date": pd.Timestamp(match.match_date),
             "home_team": home_team.canonical_name,
@@ -483,9 +506,18 @@ def generate_batch_predictions(db) -> int:
             "home_fouls": 0, "away_fouls": 0,
             "home_yellow_cards": 0, "away_yellow_cards": 0,
             "home_red_cards": 0, "away_red_cards": 0,
-            "odds_home": None, "odds_draw": None, "odds_away": None,
+            "odds_home": oh, "odds_draw": od, "odds_away": oa,
         })
         match_index_map[len(upcoming_rows) - 1] = (match, ml_league_code)
+
+    odds_present = sum(
+        1 for r in upcoming_rows
+        if r["odds_home"] is not None and r["odds_away"] is not None
+    )
+    logger.info(
+        "Odds injected on %d/%d upcoming rows (rest fall back to neutral imputation)",
+        odds_present, len(upcoming_rows),
+    )
 
     if not upcoming_rows:
         # All scheduled matches were either WC (handled above) or had
@@ -597,11 +629,17 @@ def generate_batch_predictions(db) -> int:
             predicted_result = INT_TO_RESULT.get(pred_class, "H")
             confidence = float(probs[pred_class])
 
+            # Use real odds for edge computation when available — otherwise
+            # value-pick detection silently runs against null and returns
+            # "no value" for every match.
+            row_odds_h, row_odds_d, row_odds_a = odds_by_match.get(
+                match.id, (None, None, None)
+            )
             edge_result = compute_edge(
                 prob_home=float(probs[0]),
                 prob_draw=float(probs[1]),
                 prob_away=float(probs[2]),
-                odds_home=None, odds_draw=None, odds_away=None,
+                odds_home=row_odds_h, odds_draw=row_odds_d, odds_away=row_odds_a,
             )
 
             # Upsert — use batched lookup to avoid N+1 query per match
@@ -626,7 +664,10 @@ def generate_batch_predictions(db) -> int:
                 from types import SimpleNamespace
                 from services.reasoning import generate_explanation
                 pred_data["explanation_text"] = generate_explanation(
-                    SimpleNamespace(**pred_data, odds_home=None, odds_draw=None, odds_away=None),
+                    SimpleNamespace(
+                        **pred_data,
+                        odds_home=row_odds_h, odds_draw=row_odds_d, odds_away=row_odds_a,
+                    ),
                     match,
                 )
             except Exception as exc:
