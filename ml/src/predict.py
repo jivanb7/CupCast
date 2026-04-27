@@ -56,11 +56,14 @@ def load_production_model(model_type: str = "club"):
         logger.info("Loaded %s model from %s", model_type, local_path)
         return model
 
-    # Fallback: try MLFlow
+    # Fallback: try MLFlow registry. Uses the modern @prod alias syntax —
+    # the legacy `/Production` stage label was deprecated in MLflow 3.x and
+    # raises 404 even when an alias is set. Stay aligned with the backend's
+    # prediction_service.py which also resolves models via @prod.
     try:
         import mlflow
-        model = mlflow.pyfunc.load_model(f"models:/{model_name}/Production")
-        logger.info("Loaded %s model from MLFlow registry", model_type)
+        model = mlflow.pyfunc.load_model(f"models:/{model_name}@prod")
+        logger.info("Loaded %s model from MLFlow registry via @prod alias", model_type)
         return model
     except Exception as e:
         logger.error("Failed to load %s model: %s", model_type, e)
