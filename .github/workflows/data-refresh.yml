@@ -86,6 +86,21 @@ jobs:
           echo '{"username":"${{ secrets.KAGGLE_USERNAME }}","key":"${{ secrets.KAGGLE_KEY }}"}' > ~/.kaggle/kaggle.json
           chmod 600 ~/.kaggle/kaggle.json
 
+      # Refresh API-Football top scorers + injuries into the prod DB AND
+      # export the resulting per-team snapshots to the parquets that
+      # ml/src/feature_engineering reads. Costs ~200 API requests against
+      # the 7500/day quota — well within budget. Runs before the pipeline
+      # so feature engineering picks up fresh availability + injury data.
+      - name: Refresh + export player features (top scorers, injuries, availability)
+        if: ${{ github.event.inputs.mode == null || github.event.inputs.mode == 'full' || github.event.inputs.mode == 'data-only' }}
+        run: |
+          python scripts/refresh_and_export_player_features.py
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          API_FOOTBALL_KEYS: ${{ secrets.API_FOOTBALL_KEYS }}
+          PYTHONPATH: backend:ml:.
+        continue-on-error: true  # availability is enrichment, not load-bearing
+
       - name: Run pipeline (ingest → process → features → train)
         id: pipeline
         run: |

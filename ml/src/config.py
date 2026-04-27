@@ -155,6 +155,11 @@ CLUB_FEATURES = [
     "home_elo", "away_elo", "elo_diff",
     "home_league_rank_norm", "away_league_rank_norm", "rank_diff",
     "home_season_ppg", "away_season_ppg", "season_ppg_diff",
+    # Key-player availability — score in [0.0, 1.0], lower = top scorers
+    # injured/suspended. Populated by scripts/refresh_and_export_player_features.py
+    # which calls API-Football top-scorers + injuries endpoints. Defaults
+    # to 1.0 (fully available) for matches outside the current season.
+    "home_key_player_avail", "away_key_player_avail",
 ]
 
 # ---------------------------------------------------------------------------

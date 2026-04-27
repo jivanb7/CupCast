@@ -544,6 +544,61 @@ def compute_intl_features(
     return result
 
 
+def add_availability_features(
+    df: pd.DataFrame,
+    avail_path: str | None = None,
+) -> pd.DataFrame:
+    """Merge per-team key-player availability score onto the feature frame.
+
+    `key_player_avail` is a [0.0, 1.0] score — 1.0 = top scorers all available,
+    lower = key attackers injured/suspended. Computed by
+    backend.services.player_availability_service.compute_key_player_availability
+    and exported to ml/data/processed/team_availability.parquet by
+    scripts/refresh_and_export_player_features.py.
+
+    Falls back to 1.0 (fully available) when the parquet is missing or when
+    a team has no row — same default the backend service uses.
+    """
+    from pathlib import Path as _Path
+
+    out_cols = ["home_key_player_avail", "away_key_player_avail"]
+
+    path = _Path(avail_path) if avail_path else (
+        PROCESSED_DIR / "team_availability.parquet"
+    )
+
+    if not path.exists():
+        logger.warning("Availability parquet not found at %s — defaulting to 1.0", path)
+        for c in out_cols:
+            df[c] = 1.0
+        return df
+
+    if "home_team_id" not in df.columns or "away_team_id" not in df.columns:
+        logger.warning("home_team_id/away_team_id not in feature frame — defaulting availability to 1.0")
+        for c in out_cols:
+            df[c] = 1.0
+        return df
+
+    avail = pd.read_parquet(path)[["team_id", "key_player_avail"]]
+
+    home = avail.rename(columns={
+        "team_id": "home_team_id",
+        "key_player_avail": "home_key_player_avail",
+    })
+    away = avail.rename(columns={
+        "team_id": "away_team_id",
+        "key_player_avail": "away_key_player_avail",
+    })
+
+    df = df.merge(home, on="home_team_id", how="left")
+    df = df.merge(away, on="away_team_id", how="left")
+
+    for c in out_cols:
+        df[c] = df[c].fillna(1.0).astype(float)
+
+    return df
+
+
 def add_injury_features(
     df: pd.DataFrame,
     injuries_path: str | None = None,
@@ -864,6 +919,9 @@ def build_feature_matrix(
 
         # 7. Injury features (team-level snapshot)
         features = add_injury_features(features)
+
+        # 7b. Key-player availability features (top scorer active/injured)
+        features = add_availability_features(features)
 
         # Impute and select final columns
         features = impute_missing_features(features)
