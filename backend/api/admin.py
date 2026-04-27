@@ -547,6 +547,136 @@ def refresh_league_players(
         )
 
 
+@router.post("/fixtures/cleanup-ucl-phantoms")
+def cleanup_ucl_phantoms(
+    _key: str = Depends(verify_admin_key),
+    db: Session = Depends(get_db),
+):
+    """Remove UCL fixtures that involve clubs which don't actually play in
+    the Champions League proper.
+
+    Background: API-Football's UCL feed occasionally includes preliminary /
+    qualifying-round fixtures for clubs from smaller leagues (e.g. Drita
+    from Kosovo, Inter Club d'Escaldes from Andorra). When those land in
+    our `ucl` league_code with kickoff times overlapping the real semifinal
+    legs, the slate ends up showing 8 cards where there should be 4. This
+    endpoint deletes any UCL matches whose home OR away team is on the
+    blocklist below, plus their predictions and any score_corrections rows.
+
+    Add a team to the blocklist when the user reports a phantom; keep the
+    list explicit so we never delete a legitimate fixture by accident.
+    """
+    from models.league import League
+    from models.match import Match
+    from models.prediction import Prediction
+    from models.team import Team
+
+    BLOCKLIST_NAMES = {
+        "Drita",
+        "Inter Club d'Escaldes",
+    }
+
+    ucl = db.query(League).filter(League.code == "ucl").first()
+    if not ucl:
+        raise HTTPException(status_code=404, detail="UCL league row not found")
+
+    bad_teams = (
+        db.query(Team).filter(Team.canonical_name.in_(BLOCKLIST_NAMES)).all()
+    )
+    bad_team_ids = {t.id for t in bad_teams}
+    if not bad_team_ids:
+        return {"status": "done", "deleted_matches": 0, "deleted_predictions": 0, "blocked": []}
+
+    phantom_matches = (
+        db.query(Match)
+        .filter(
+            Match.league_id == ucl.id,
+            (Match.home_team_id.in_(bad_team_ids)) | (Match.away_team_id.in_(bad_team_ids)),
+        )
+        .all()
+    )
+    phantom_match_ids = [m.id for m in phantom_matches]
+
+    deleted_preds = 0
+    if phantom_match_ids:
+        deleted_preds = (
+            db.query(Prediction)
+            .filter(Prediction.match_id.in_(phantom_match_ids))
+            .delete(synchronize_session=False)
+        )
+        # score_corrections may reference these matches too — defensive cleanup
+        try:
+            from sqlalchemy import text
+            db.execute(
+                text("DELETE FROM score_corrections WHERE match_id = ANY(:ids)"),
+                {"ids": phantom_match_ids},
+            )
+        except Exception:
+            # SQLite uses different syntax; ignore (cleanup is best-effort).
+            pass
+
+    for m in phantom_matches:
+        db.delete(m)
+
+    db.commit()
+
+    return {
+        "status": "done",
+        "deleted_matches": len(phantom_match_ids),
+        "deleted_predictions": deleted_preds,
+        "blocked": sorted(BLOCKLIST_NAMES),
+        "match_ids": phantom_match_ids,
+    }
+
+
+@router.post("/teams/audit-crests")
+def audit_team_crests(
+    _key: str = Depends(verify_admin_key),
+    db: Session = Depends(get_db),
+):
+    """Apply curated corrections to ``Team.logo_url`` for known-wrong crests.
+
+    Background: the fixture seeder occasionally pulls a wrong API-Football
+    team id when there's a name collision (e.g. PSG was bound to api id 3408,
+    which is actually Aris Limassol of Cyprus). The frontend then renders the
+    wrong club crest. Maintaining a tiny curated map here is safer than
+    re-resolving every team — these fixes are stable, documented, and easy to
+    review in PRs.
+
+    Each entry maps the canonical team name to the correct api-sports.io
+    image id. We match on ``canonical_name`` and rewrite ``logo_url`` only
+    when the current value differs.
+    """
+    from models.team import Team
+
+    CRESTS = {
+        # Big clubs whose API-Football id collided with another team during
+        # seeding and need a one-time correction. Add new entries here when
+        # users report a wrong crest — keep the list short and intentional.
+        "Paris Saint-Germain": 85,
+    }
+    base = "https://media.api-sports.io/football/teams"
+    fixed = []
+    skipped = []
+    for name, api_id in CRESTS.items():
+        team = db.query(Team).filter(Team.canonical_name == name).first()
+        if not team:
+            skipped.append({"name": name, "reason": "team not found"})
+            continue
+        target = f"{base}/{api_id}.png"
+        if team.logo_url == target:
+            skipped.append({"name": name, "reason": "already correct"})
+            continue
+        old = team.logo_url
+        team.logo_url = target
+        fixed.append({"name": name, "team_id": team.id, "old": old, "new": target})
+
+    if fixed:
+        db.commit()
+
+    return {"status": "done", "fixed": fixed, "skipped": skipped}
+
+
 @router.post("/explanations/backfill")
 def backfill_explanations(
     limit: int = Query(2000, ge=1, le=20000),

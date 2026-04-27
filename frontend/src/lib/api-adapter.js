@@ -23,6 +23,12 @@
 
 import { decorate } from './data.js'
 import { shortFor, shortOverride, venueFor, formatStage, leagueShortFor } from './teamMeta.js'
+import {
+  buildKickoffDate,
+  formatKickoffTime,
+  formatKickoffDate,
+  isLocalToday,
+} from './time.js'
 
 const STATUS_MAP = {
   scheduled: 'UPCOMING',
@@ -77,20 +83,10 @@ function pickEdge(pred) {
   return +(Number(raw) * 100).toFixed(1)
 }
 
-function kickoffHHMM(matchDate, kickoffTime) {
-  if (kickoffTime) return String(kickoffTime).slice(0, 5)
-  if (matchDate) {
-    try {
-      const d = new Date(matchDate)
-      const hh = String(d.getUTCHours()).padStart(2, '0')
-      const mm = String(d.getUTCMinutes()).padStart(2, '0')
-      return `${hh}:${mm}`
-    } catch {
-      return ''
-    }
-  }
-  return ''
-}
+// Backend stores match_date + kickoff_time in UTC. Build a real Date on the
+// adapter so every page can render it in the viewer's local TZ via Intl,
+// and so date filters compare local-day-of-the-kickoff (not the UTC date,
+// which can drift for late-night matches).
 
 export function adaptMatch(api) {
   if (!api) return null
@@ -106,7 +102,14 @@ export function adaptMatch(api) {
     : undefined
   const homeShort = bestShort(api.home_team_name, api.home_team_short_name)
   const awayShort = bestShort(api.away_team_name, api.away_team_short_name)
+  // Build the kickoff datetime once; downstream display fields all derive
+  // from the same Date object so DST + day boundaries stay consistent.
+  const kickoffAt = buildKickoffDate(api.match_date, api.kickoff_time)
   const decorated = decorate({
+    kickoffAt,
+    kickoff: formatKickoffTime(kickoffAt, { fmt: '24h' }),
+    kickoffDateLabel: formatKickoffDate(kickoffAt),
+    isToday: isLocalToday(kickoffAt),
     id: String(api.id),
     league: leagueShortFor(api.league_code, api.league_name),
     leagueCode: api.league_code || '',
@@ -117,7 +120,6 @@ export function adaptMatch(api) {
     away: api.away_team_name,
     awayShort,
     awayCrest: api.away_team_crest || null,
-    kickoff: kickoffHHMM(api.match_date, api.kickoff_time),
     matchDate: api.match_date || '',
     venue: venueFor(api.home_team_name),
     status,

@@ -3,7 +3,6 @@
 // knockout bracket tree. Wired to /api/v1/world-cup/* via useWorldCup().
 
 import Aurora from '../components/cc/Aurora';
-import Crest from '../components/cc/Crest';
 import Eyebrow from '../components/cc/Eyebrow';
 import CCNav from '../components/cc/CCNav';
 import UpdatedBadge from '../components/cc/UpdatedBadge';
@@ -20,13 +19,36 @@ import { Link } from 'react-router-dom';
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
-function teamShort(team) {
-  if (!team) return '';
-  const code = (team.country_code || '').toUpperCase();
-  if (code.length === 3) return code;
-  if (code.length === 2) return code; // ISO-2 still legible on a 22px disk
-  const cleaned = (team.name || '').replace(/[^A-Za-z]/g, '');
-  return cleaned.slice(0, 3).toUpperCase();
+// Convert an ISO 3166-1 alpha-2 country code into a flag emoji using the
+// regional-indicator unicode trick. Returns '' on bad input so callers can
+// safely concatenate without checking.
+function flagEmoji(countryCode) {
+  if (!countryCode) return '';
+  const cc = String(countryCode).trim().toUpperCase();
+  if (cc.length !== 2 || !/^[A-Z]{2}$/.test(cc)) return '';
+  const A = 0x1f1e6;
+  return String.fromCodePoint(A + (cc.charCodeAt(0) - 65), A + (cc.charCodeAt(1) - 65));
+}
+
+// Inline flag pill — fixed width so layouts don't jitter when the emoji
+// is missing. Renders a small bullet placeholder if the flag can't render.
+function Flag({ countryCode, size = 14 }) {
+  const flag = flagEmoji(countryCode);
+  return (
+    <span
+      style={{
+        display: 'inline-flex',
+        width: size + 4,
+        fontSize: size,
+        lineHeight: 1,
+        textAlign: 'center',
+        flexShrink: 0,
+      }}
+      aria-hidden="true"
+    >
+      {flag || '·'}
+    </span>
+  );
 }
 
 function daysUntil(isoDate) {
@@ -171,7 +193,7 @@ export default function WorldCup() {
                 <div key={c.team_id} style={{display:'grid', gridTemplateColumns:'24px 1fr 70px', gap: 10, padding:'10px 0', borderBottom:'1px solid var(--cc-line)', alignItems:'center'}}>
                   <span className="mono tnum" style={{color:'var(--cc-dim)', fontSize: 11}}>{String(i + 1).padStart(2, '0')}</span>
                   <div style={{display:'flex', alignItems:'center', gap: 10}}>
-                    <Crest short={teamShort(c)} size={22}/>
+                    <Flag countryCode={c.country_code} size={16}/>
                     <span style={{fontFamily:'var(--cc-display)', fontSize: 14}}>{c.name}</span>
                   </div>
                   <span className="serif tnum" style={{fontSize: 22, fontStyle:'italic', fontWeight:600, color: i === 0 ? 'var(--cc-gold)' : 'var(--cc-text)', textAlign:'right', letterSpacing:'-0.02em'}}>
@@ -241,7 +263,7 @@ function HeroBig({ eyebrow, title, big, unit, sub }) {
     ? big
     : (typeof big === 'string' && big.includes('.') ? v.toFixed(1) : Math.round(v));
   return (
-    <div style={{padding:'30px 28px 30px 0', borderRight:'1px solid var(--cc-line-strong)'}}>
+    <div style={{padding:'30px 28px 30px 28px', borderRight:'1px solid var(--cc-line-strong)'}}>
       <Eyebrow>{eyebrow}</Eyebrow>
       {title && <div className="serif" style={{fontSize: 30, fontStyle:'italic', fontWeight: 600, color:'var(--cc-gold)', marginTop: 6, letterSpacing:'-0.02em'}}>{title}</div>}
       <div style={{display:'flex', alignItems:'baseline', gap: 8, marginTop: 10}}>
@@ -255,7 +277,7 @@ function HeroBig({ eyebrow, title, big, unit, sub }) {
 
 function HeroSkeleton({ wide }) {
   return (
-    <div style={{padding:'30px 28px 30px 0', borderRight:'1px solid var(--cc-line-strong)'}}>
+    <div style={{padding:'30px 28px 30px 28px', borderRight:'1px solid var(--cc-line-strong)'}}>
       <div style={{height: 12, width: 120, background:'var(--cc-line)', marginBottom: 18}}/>
       {wide && <div style={{height: 26, width: 180, background:'var(--cc-line)', marginBottom: 12}}/>}
       <div style={{height: 90, width: wide ? 260 : 180, background:'var(--cc-line)'}}/>
@@ -266,7 +288,7 @@ function HeroSkeleton({ wide }) {
 
 function HeroEmpty({ eyebrow, message }) {
   return (
-    <div style={{padding:'30px 28px 30px 0', borderRight:'1px solid var(--cc-line-strong)'}}>
+    <div style={{padding:'30px 28px 30px 28px', borderRight:'1px solid var(--cc-line-strong)'}}>
       <Eyebrow>{eyebrow}</Eyebrow>
       <div style={{marginTop: 22, fontSize: 14, color:'var(--cc-muted)', maxWidth: 320, lineHeight: 1.5}}>{message}</div>
     </div>
@@ -298,7 +320,7 @@ function GroupCard({ g, idx, oddsByTeamId }) {
         const advancing = t.qualification_status === 'advancing' || i < 2;
         const eliminated = t.qualification_status === 'eliminated';
         return (
-          <div key={t.team_id ?? i} style={{display:'grid', gridTemplateColumns:'14px 24px 1fr 56px', gap: 10, padding:'8px 0', borderBottom: i < sorted.length - 1 ? '1px solid var(--cc-line)' : 'none', alignItems:'center'}}>
+          <div key={t.team_id ?? i} style={{display:'grid', gridTemplateColumns:'14px 22px 1fr 56px', gap: 10, padding:'8px 0', borderBottom: i < sorted.length - 1 ? '1px solid var(--cc-line)' : 'none', alignItems:'center'}}>
             <span style={{
               width: 6,
               height: 6,
@@ -306,7 +328,7 @@ function GroupCard({ g, idx, oddsByTeamId }) {
               background: eliminated ? 'var(--cc-muted)' : (advancing ? 'var(--cc-green)' : 'var(--cc-line-strong)'),
               opacity: eliminated ? 0.5 : 1,
             }}/>
-            <Crest short={teamShort(t)} size={20}/>
+            <Flag countryCode={t.country_code} size={14}/>
             <span style={{fontFamily:'var(--cc-display)', fontSize: 13, fontWeight: 500, opacity: eliminated ? 0.5 : 1}}>{t.name}</span>
             <div style={{display:'flex', alignItems:'center', gap: 6, justifyContent:'flex-end'}}>
               <div style={{flex: 1, height: 2, background:'var(--cc-line)', maxWidth: 36}}>
@@ -394,7 +416,7 @@ function ChampionPath({ champion }) {
               </div>
               <div style={{display:'flex', alignItems:'center', gap: 12}}>
                 <span className="mono" style={{fontSize: 10, color:'var(--cc-muted)', letterSpacing:'0.1em'}}>vs</span>
-                <Crest short={(opp?.name || '???').slice(0, 3).toUpperCase()} size={26}/>
+                <Flag countryCode={opp?.country_code} size={18}/>
                 <span style={{fontFamily:'var(--cc-display)', fontSize: 16, fontWeight: 500, color: isFinal ? 'var(--cc-gold)' : 'var(--cc-text)'}}>
                   {opp?.name || 'TBD'}
                 </span>
@@ -403,8 +425,8 @@ function ChampionPath({ champion }) {
                 <div className="serif tnum" style={{fontSize: 24, fontStyle:'italic', fontWeight: 600, color: isFinal ? 'var(--cc-gold)' : 'var(--cc-text)', letterSpacing:'-0.02em', lineHeight: 1}}>
                   {winPct}<span style={{fontSize: 11, color:'var(--cc-muted)'}}>%</span>
                 </div>
-                <div className="mono" style={{fontSize: 9, color:'var(--cc-dim)', letterSpacing:'0.08em', marginTop: 4}}>
-                  WIN · MATCHUP HIT IN {freqPct}% OF SIMS
+                <div className="mono" style={{fontSize: 11, color:'var(--cc-muted)', letterSpacing:'0.06em', marginTop: 6}}>
+                  win · matchup hit in <span className="tnum" style={{color:'var(--cc-text)'}}>{freqPct}%</span> of sims
                 </div>
               </div>
             </div>
@@ -440,9 +462,13 @@ function MostLikelyFinals({ finals }) {
           const widthPct = max > 0 ? Math.max(2, (f.frequency / max) * 100) : 0
           return (
             <div key={i} style={{padding:'12px 0', borderBottom: i < top.length - 1 ? '1px solid var(--cc-line)' : 'none'}}>
-              <div style={{display:'flex', justifyContent:'space-between', alignItems:'baseline', marginBottom: 6}}>
-                <span style={{fontFamily:'var(--cc-display)', fontSize: 14, fontWeight: 500}}>
-                  {f.champion?.name} <span style={{color:'var(--cc-muted)', fontStyle:'italic'}}>def.</span> {f.runner_up?.name}
+              <div style={{display:'flex', justifyContent:'space-between', alignItems:'baseline', marginBottom: 6, gap: 12}}>
+                <span style={{display:'flex', alignItems:'center', gap: 8, fontFamily:'var(--cc-display)', fontSize: 14, fontWeight: 500}}>
+                  <Flag countryCode={f.champion?.country_code} size={14}/>
+                  <span>{f.champion?.name}</span>
+                  <span style={{color:'var(--cc-muted)', fontStyle:'italic'}}>def.</span>
+                  <Flag countryCode={f.runner_up?.country_code} size={14}/>
+                  <span>{f.runner_up?.name}</span>
                 </span>
                 <span className="serif tnum" style={{fontSize: 18, fontStyle:'italic', fontWeight: 600, color: i === 0 ? 'var(--cc-gold)' : 'var(--cc-text)', letterSpacing:'-0.02em'}}>
                   {pct.toFixed(1)}<span style={{fontSize: 10, color:'var(--cc-muted)'}}>%</span>

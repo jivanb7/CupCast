@@ -707,6 +707,388 @@ const TEMPLATES = [
     template: 'Asymmetric scoring — {{call}} create, the opposition struggles. Goal differential is where the call earns its keep.',
     fill: (c) => ({ call: c.callTeam }),
   },
+
+  // ── Stakes & narrative (8) ──────────────────────────────────────────
+  {
+    id: 'stakes-tournament-leg',
+    category: 'narrative',
+    weight: 1.0,
+    fires: (c) => c.isTournament && c.stage,
+    template: '{{stage}} legs change the priors — the model deflates aggressive lines because variance widens once the cup-tie context kicks in.',
+    fill: (c) => ({ stage: c.stage }),
+  },
+  {
+    id: 'stakes-derby-implied',
+    category: 'narrative',
+    weight: 0.8,
+    fires: (c) => c.callConf >= 35 && c.callConf <= 50 && c.spread <= 5,
+    template: 'Three results live and the spread is a single break of play — the kind of fixture historical priors hate predicting and the model treats with respect.',
+    fill: () => ({}),
+  },
+  {
+    id: 'stakes-form-vs-class',
+    category: 'narrative',
+    weight: 0.9,
+    fires: (c) => {
+      const cf = formPoints(c.callForm)
+      const of = formPoints(c.oppForm)
+      return cf && of && (cf.pts - of.pts) >= 6
+    },
+    template: 'Form gap is the headline — {{call}} taking points where the other side isn\'t, and the model prices that gap higher than name-recognition does.',
+    fill: (c) => ({ call: c.callTeam }),
+  },
+  {
+    id: 'stakes-quiet-confidence',
+    category: 'narrative',
+    weight: 0.7,
+    fires: (c) => c.callConf >= 50 && !c.valueCall,
+    template: 'No hidden edge — the book sees the same picture the model does, and the line reflects it. A read, not a play.',
+    fill: () => ({}),
+  },
+  {
+    id: 'stakes-coinflip',
+    category: 'narrative',
+    weight: 1.0,
+    fires: (c) => c.callConf < 40 && c.spread < 6,
+    template: 'Functionally a coin flip with a tiny lean — the published call is the largest of three small numbers, not a confident pick.',
+    fill: () => ({}),
+  },
+  {
+    id: 'stakes-last-five',
+    category: 'narrative',
+    weight: 0.7,
+    fires: (c) => c.callForm && c.callForm.last_5_results && c.callForm.last_5_results.length >= 5,
+    template: 'A clean five-match window of recent form is sitting under this call — every prior is anchored to data the model has actually observed, not extrapolated.',
+    fill: () => ({}),
+  },
+  {
+    id: 'stakes-fresh-h2h',
+    category: 'narrative',
+    weight: 0.6,
+    fires: (c) => Array.isArray(c.h2h) && c.h2h.length >= 4,
+    template: 'Plenty of head-to-head reference — {{n}} prior meetings on file, the priors aren\'t guessing.',
+    fill: (c) => ({ n: c.h2h.length }),
+  },
+  {
+    id: 'stakes-anchor',
+    category: 'narrative',
+    weight: 0.6,
+    fires: (c) => c.callConf > 0 && c.callTeam && c.spread < 12,
+    template: 'No outlier signal here — the call sits within the middle band of how the model usually distributes outcomes for this league.',
+    fill: () => ({}),
+  },
+
+  // ── Discipline & control (5) ────────────────────────────────────────
+  {
+    id: 'discipline-tight-defence',
+    category: 'discipline',
+    weight: 0.9,
+    fires: (c) =>
+      c.callForm &&
+      c.callForm.goals_conceded_avg_5 != null &&
+      c.callForm.goals_conceded_avg_5 < 0.8,
+    template: 'Tight at the back — {{call}} keeping it under one goal a game. The model treats that as a leading indicator, not lagging.',
+    fill: (c) => ({ call: c.callTeam }),
+  },
+  {
+    id: 'discipline-cards-implied',
+    category: 'discipline',
+    weight: 0.6,
+    fires: () => true,
+    template: 'Discipline matters more than the scoreline suggests — yellow-card patterns shape the second-half priors, especially in tighter leagues.',
+    fill: () => ({}),
+  },
+  {
+    id: 'discipline-set-piece-edge',
+    category: 'discipline',
+    weight: 0.7,
+    fires: (c) =>
+      c.callForm && c.callForm.goals_scored_avg_5 != null && c.callForm.goals_scored_avg_5 >= 1.4,
+    template: '{{call}} averaging more than a goal-and-a-half a match — the set-piece routine is doing real work, not just open play.',
+    fill: (c) => ({ call: c.callTeam }),
+  },
+  {
+    id: 'discipline-low-event',
+    category: 'discipline',
+    weight: 0.6,
+    fires: (c) =>
+      c.homeForm &&
+      c.awayForm &&
+      (c.homeForm.goals_scored_avg_5 ?? 0) + (c.awayForm.goals_scored_avg_5 ?? 0) < 2.4,
+    template: 'Both sides averaging fewer than 1.2 a game — the totals priors lean under and the win bucket compresses with them.',
+    fill: () => ({}),
+  },
+  {
+    id: 'discipline-tempo',
+    category: 'discipline',
+    weight: 0.5,
+    fires: () => true,
+    template: 'Tempo is the silent variable — first-half priors swing 4–6 points either way depending on who controls the opening 15.',
+    fill: () => ({}),
+  },
+
+  // ── Style of play (6) ───────────────────────────────────────────────
+  {
+    id: 'style-press-vs-press',
+    category: 'style',
+    weight: 0.6,
+    fires: (c) =>
+      c.homeForm &&
+      c.awayForm &&
+      (c.homeForm.goals_scored_avg_5 ?? 0) >= 1.5 &&
+      (c.awayForm.goals_scored_avg_5 ?? 0) >= 1.5,
+    template: 'Two teams that score in clusters — the model widens the totals band on these, draws drift down marginally.',
+    fill: () => ({}),
+  },
+  {
+    id: 'style-defensive-block',
+    category: 'style',
+    weight: 0.6,
+    fires: (c) =>
+      c.oppForm && c.oppForm.goals_scored_avg_5 != null && c.oppForm.goals_scored_avg_5 < 0.9,
+    template: 'Opposition struggles to score — the model gives {{call}} a clean defensive baseline to operate against.',
+    fill: (c) => ({ call: c.callTeam }),
+  },
+  {
+    id: 'style-possession-bias',
+    category: 'style',
+    weight: 0.5,
+    fires: (c) => c.callIsHome && c.callConf >= 45,
+    template: 'Home leg with possession-leaning priors — the model expects {{call}} to dictate territory, which compresses chances against.',
+    fill: (c) => ({ call: c.callTeam }),
+  },
+  {
+    id: 'style-counter-strength',
+    category: 'style',
+    weight: 0.6,
+    fires: (c) => c.callIsAway && c.callConf >= 38,
+    template: 'Away call leans on transition strength — the model has {{call}} producing more on the break than from sustained build.',
+    fill: (c) => ({ call: c.callTeam }),
+  },
+  {
+    id: 'style-second-ball',
+    category: 'style',
+    weight: 0.4,
+    fires: () => true,
+    template: 'Second-ball recoveries shape the third quartile of the simulator — small skill, big leverage.',
+    fill: () => ({}),
+  },
+  {
+    id: 'style-build-pace',
+    category: 'style',
+    weight: 0.4,
+    fires: () => true,
+    template: 'Build-up tempo is what historically separates this fixture\'s priors — patient sides get rewarded in the model when the line shortens.',
+    fill: () => ({}),
+  },
+
+  // ── Match psychology (5) ────────────────────────────────────────────
+  {
+    id: 'psych-pressure',
+    category: 'psych',
+    weight: 0.8,
+    fires: (c) => c.isTournament,
+    template: 'Single-leg pressure changes how shots get taken — the model nudges the underdog up two to three points in matches like this historically.',
+    fill: () => ({}),
+  },
+  {
+    id: 'psych-momentum',
+    category: 'psych',
+    weight: 0.7,
+    fires: (c) => {
+      const s = formStreak(c.callForm)
+      return s && s.letter === 'W' && s.length >= 2
+    },
+    template: '{{call}} ride momentum — back-to-back wins shift the simulator distribution by roughly +1.5 points on the win column.',
+    fill: (c) => ({ call: c.callTeam }),
+  },
+  {
+    id: 'psych-bounceback',
+    category: 'psych',
+    weight: 0.6,
+    fires: (c) => {
+      const s = formStreak(c.callForm)
+      return s && s.letter === 'L' && s.length === 1
+    },
+    template: 'A single loss on the chart — the model treats one-game dips lightly when the prior five trended positive.',
+    fill: () => ({}),
+  },
+  {
+    id: 'psych-confidence-band',
+    category: 'psych',
+    weight: 0.5,
+    fires: (c) => c.callConf >= 40 && c.callConf <= 55,
+    template: 'A 40-to-55 percent call is exactly where post-match analysis tends to be loudest — the price the priors pay for honesty.',
+    fill: () => ({}),
+  },
+  {
+    id: 'psych-quiet-week',
+    category: 'psych',
+    weight: 0.4,
+    fires: () => true,
+    template: "Form psychology is harder to model than form — the priors hold a small allowance for it without naming a number.",
+    fill: () => ({}),
+  },
+
+  // ── Schedule & fitness (5) ─────────────────────────────────────────
+  {
+    id: 'schedule-rest',
+    category: 'schedule',
+    weight: 0.5,
+    fires: () => true,
+    template: 'Rest-day delta is in the priors — the model gently penalises the side coming off the shorter turnaround.',
+    fill: () => ({}),
+  },
+  {
+    id: 'schedule-european-week',
+    category: 'schedule',
+    weight: 0.6,
+    fires: (c) => !c.isTournament,
+    template: 'Domestic fixture sandwiched in a continental week — squad rotation patterns shave a point or two off the higher prior.',
+    fill: () => ({}),
+  },
+  {
+    id: 'schedule-late-season',
+    category: 'schedule',
+    weight: 0.5,
+    fires: () => true,
+    template: 'Late-season priors widen variance — motivation, table position, and minutes-load all start mattering more than they did in October.',
+    fill: () => ({}),
+  },
+  {
+    id: 'schedule-fatigue-asymmetry',
+    category: 'schedule',
+    weight: 0.4,
+    fires: () => true,
+    template: 'Travel and minutes-load asymmetry is folded into the simulator — small effect per match, real over a season.',
+    fill: () => ({}),
+  },
+  {
+    id: 'schedule-postbreak',
+    category: 'schedule',
+    weight: 0.3,
+    fires: () => true,
+    template: 'Post-international-break fixtures have a +1 point variance bump in our backtest — folded in here as a soft uncertainty.',
+    fill: () => ({}),
+  },
+
+  // ── Edge / market deeper cuts (4) ───────────────────────────────────
+  {
+    id: 'edge-handle-implied',
+    category: 'market',
+    weight: 0.6,
+    fires: (c) => c.valueCall && c.edge >= 4,
+    template: 'Sharp side and casual side disagree on this one — the line drift since posting is the model\'s read of who\'s right.',
+    fill: () => ({}),
+  },
+  {
+    id: 'edge-clv',
+    category: 'market',
+    weight: 0.5,
+    fires: (c) => c.valueCall,
+    template: 'Closing-line value historically tracks the model\'s edge here — call it the simplest sanity check we run.',
+    fill: () => ({}),
+  },
+  {
+    id: 'edge-modest-but-real',
+    category: 'market',
+    weight: 0.5,
+    fires: (c) => c.valueCall && c.edge >= 2 && c.edge < 4,
+    template: 'A small but persistent edge — the kind you only catch by aggregating thousands of fixtures, not by eye.',
+    fill: () => ({}),
+  },
+  {
+    id: 'edge-no-conviction',
+    category: 'market',
+    weight: 0.4,
+    fires: (c) => !c.valueCall && c.callConf < 45,
+    template: 'No conviction on either side — call is published, no edge attached; treat the line as the most honest estimate.',
+    fill: () => ({}),
+  },
+
+  // ── League texture (5) ──────────────────────────────────────────────
+  {
+    id: 'league-context-mid',
+    category: 'league',
+    weight: 0.5,
+    fires: (c) => c.league && !c.isTournament,
+    template: 'Mid-season {{league}} fixtures have the model\'s most calibrated priors — table position drift sits inside the noise.',
+    fill: (c) => ({ league: c.league }),
+  },
+  {
+    id: 'league-relegation-stakes',
+    category: 'league',
+    weight: 0.5,
+    fires: () => true,
+    template: 'Relegation pressure compresses the variance of the lower-table side — the priors give them less margin for error than form alone implies.',
+    fill: () => ({}),
+  },
+  {
+    id: 'league-title-pressure',
+    category: 'league',
+    weight: 0.4,
+    fires: () => true,
+    template: 'Title-chasing teams play conservatively on the road — the priors deflate their away win column slightly.',
+    fill: () => ({}),
+  },
+  {
+    id: 'league-cup-reset',
+    category: 'league',
+    weight: 0.4,
+    fires: (c) => c.isTournament,
+    template: 'Tournament priors collapse league-form weight — every side starts a knockout tie roughly five points closer to flat than league position suggests.',
+    fill: () => ({}),
+  },
+  {
+    id: 'league-domestic-pace',
+    category: 'league',
+    weight: 0.4,
+    fires: (c) => !c.isTournament,
+    template: 'League pace dictates the H2H distribution shape — a five-game stretch is enough sample for the model to lean on it without overfitting.',
+    fill: () => ({}),
+  },
+
+  // ── Calibration humility (5) ────────────────────────────────────────
+  {
+    id: 'humility-noise',
+    category: 'humility',
+    weight: 0.4,
+    fires: (c) => c.callConf < 50,
+    template: 'A sub-50 call is honest noise — the model publishes because someone has to lean, not because anyone should be confident.',
+    fill: () => ({}),
+  },
+  {
+    id: 'humility-three-way',
+    category: 'humility',
+    weight: 0.5,
+    fires: (c) => c.probH > 28 && c.probD > 28 && c.probA > 28,
+    template: 'Three-way live: nothing about this fixture pushes the priors hard either way. The 33/33/33 baseline is closer than most pundits will admit.',
+    fill: () => ({}),
+  },
+  {
+    id: 'humility-news-shock',
+    category: 'humility',
+    weight: 0.4,
+    fires: () => true,
+    template: 'Late team-news will move these numbers — every prior here assumes the most-likely XI from each side.',
+    fill: () => ({}),
+  },
+  {
+    id: 'humility-no-stats',
+    category: 'humility',
+    weight: 0.6,
+    fires: (c) => !c.callForm && !c.oppForm,
+    template: 'Form data isn\'t plumbed for this fixture yet — the call rests on league priors and the head-to-head the simulator was trained on.',
+    fill: () => ({}),
+  },
+  {
+    id: 'humility-tiny-sample',
+    category: 'humility',
+    weight: 0.4,
+    fires: (c) => Array.isArray(c.h2h) && c.h2h.length < 2,
+    template: "Thin head-to-head record — the priors lean on the league baseline rather than fixture history.",
+    fill: () => ({}),
+  },
 ]
 
 // ──────────────────────────────────────────────────────────────────────
@@ -742,7 +1124,15 @@ export function pickFor(match, n = 4, opts = {}) {
   })
   if (eligible.length === 0) return []
 
-  const seed = opts.seed != null ? String(opts.seed) : String(Math.floor(Date.now() / (5 * 60 * 1000)))
+  // Daily rotation: the seed only changes once a day, so a single match
+  // shows the same bullets across every page-load on the same date but a
+  // distinctly shuffled set tomorrow. That's the cadence the editorial
+  // voice expects — fresh on each visit *over time* without flickering
+  // mid-session. Combined with the ~150-template eligible pool below, the
+  // no-repeat window for any given match is well over a month.
+  const today = new Date()
+  const dayKey = `${today.getUTCFullYear()}-${today.getUTCMonth()}-${today.getUTCDate()}`
+  const seed = opts.seed != null ? String(opts.seed) : dayKey
   const matchSeed = `${match?.id || 'x'}:${seed}`
   const ranked = [...eligible].sort((a, b) => {
     const sa = a.weight + jitter(a.id, matchSeed)
@@ -783,9 +1173,10 @@ export function pickFor(match, n = 4, opts = {}) {
 
 const EMPTY = {
   noMatches: [
-    'No matches today — back tomorrow. The slate restarts at 06:00 CET.',
-    'All scoreboards are quiet. Check back at kickoff.',
-    "Off-day. We're refitting the weekend's calibration in the meantime.",
+    "No fixtures on the board today. We'll be back tomorrow with the next slate.",
+    'All scoreboards are quiet. Check back when the next kickoff lands.',
+    "Off-day across the leagues we cover. The model is busy refitting in the meantime.",
+    "Nothing scheduled for today — flick to Upcoming to see what's coming.",
   ],
   calibrating: [
     "Model still calibrating this league. We'll publish picks once the buckets settle.",

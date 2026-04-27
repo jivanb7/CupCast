@@ -19,6 +19,7 @@ import useClock from '../hooks/useClock'
 import useInView from '../hooks/useInView'
 import useMatchDetail from '../hooks/useMatchDetail'
 import { pickFor, emptyState } from '../lib/reasons'
+import { tzAbbreviation } from '../lib/time'
 import { Link, useParams } from 'react-router-dom'
 
 export default function MatchDetail() {
@@ -169,7 +170,7 @@ function MDHero({ m }) {
         <span style={{color:'var(--cc-gold)'}}>① The Match</span>
         <span style={{flex: 1, height: 1, background:'var(--cc-line)', minWidth: 40}}/>
         {m.league && <span>{m.league}{m.stage ? ` · ${m.stage}` : ''}</span>}
-        {m.kickoff && <span>{m.kickoff} CET</span>}
+        {m.kickoff && <span>{m.kickoffDateLabel ? `${m.kickoffDateLabel} · ${m.kickoff}` : m.kickoff} {tzAbbreviation()}</span>}
         {m.venue && <span style={{color:'var(--cc-text)'}}>{m.venue}</span>}
       </div>
 
@@ -206,7 +207,9 @@ function MDHero({ m }) {
             <>
               <div className="serif tnum" style={{fontSize: 132, fontStyle:'italic', fontWeight:600, color:'var(--cc-muted)', letterSpacing:'-0.05em', lineHeight: 1}}>vs</div>
               {m.kickoff && (
-                <div className="mono" style={{marginTop: 6, fontSize: 11, color:'var(--cc-gold)', letterSpacing:'0.12em'}}>◆ KO {m.kickoff} CET</div>
+                <div className="mono" style={{marginTop: 6, fontSize: 11, color:'var(--cc-gold)', letterSpacing:'0.12em'}}>
+                  ◆ KO {m.kickoffDateLabel ? `${m.kickoffDateLabel.toUpperCase()} · ${m.kickoff}` : m.kickoff} {tzAbbreviation()}
+                </div>
               )}
             </>
           )}

@@ -384,9 +384,14 @@ def generate_explanation(prediction, match) -> Optional[str]:
     if not eligible:
         return None
 
-    # Deterministic seed by prediction.id so the persisted text doesn't
-    # flicker if we re-run the backfill.
-    seed = _hash_seed(f"pred:{getattr(prediction, 'id', '')}")
+    # Daily-rotating seed: day-of-year + prediction.id. This means a fresh
+    # backfill on a new calendar day picks a different template; same day
+    # backfills are idempotent. Pair this with a daily admin cron that re-
+    # runs the backfill so explanation_text stays fresh without flickering
+    # mid-session for any one user.
+    import datetime as _dt
+    today = _dt.date.today()
+    seed = _hash_seed(f"pred:{getattr(prediction, 'id', '')}:{today.toordinal()}")
     eligible.sort(key=lambda t: -(t.weight + _jitter(t.id, seed)))
     pick = eligible[0]
 

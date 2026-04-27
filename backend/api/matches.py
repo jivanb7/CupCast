@@ -267,15 +267,24 @@ def _match_to_summary(
 
 
 def _get_team_form(db: Session, team_id: int, team_name: str, n: int = 5) -> TeamFormStats:
-    """Compute last N completed matches for a team and return form stats."""
+    """Compute last N completed matches for a team and return form stats.
+
+    Bounded to the last 120 days so we don't surface results from previous
+    seasons when a team has fewer than ``n`` completed fixtures in the
+    current campaign. Secondary ordering on kickoff_time handles the
+    same-day double-headers (e.g. cup + league back-to-back) so the most
+    recent kickoff genuinely lands first.
+    """
+    window_start = date.today() - timedelta(days=120)
     recent = (
         db.query(Match)
         .filter(
             Match.status == "completed",
             Match.result != None,
+            Match.match_date >= window_start,
             (Match.home_team_id == team_id) | (Match.away_team_id == team_id),
         )
-        .order_by(Match.match_date.desc())
+        .order_by(Match.match_date.desc(), Match.kickoff_time.desc().nullslast())
         .limit(n)
         .all()
     )

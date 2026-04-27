@@ -20,16 +20,8 @@ import useUpcomingMatches from '../hooks/useUpcomingMatches'
 import useModelPerformance from '../hooks/useModelPerformance'
 import { LEAGUE_FLAG } from '../lib/data'
 import { pickFor, emptyState } from '../lib/reasons'
+import { tzAbbreviation } from '../lib/time'
 
-function todayIsoSet() {
-  const now = new Date()
-  const utc = now.toISOString().slice(0, 10)
-  const local =
-    `${now.getFullYear()}-` +
-    `${String(now.getMonth() + 1).padStart(2, '0')}-` +
-    `${String(now.getDate()).padStart(2, '0')}`
-  return new Set([utc, local])
-}
 
 function pickMarquee(matches) {
   if (!matches || matches.length === 0) return null
@@ -85,10 +77,10 @@ export default function Dashboard() {
     [upcoming.matches]
   )
 
-  const todayCount = useMemo(() => {
-    const todays = todayIsoSet()
-    return upcoming.matches.filter((m) => todays.has((m.matchDate || '').slice(0, 10))).length
-  }, [upcoming.matches])
+  const todayCount = useMemo(
+    () => upcoming.matches.filter((m) => m.isToday).length,
+    [upcoming.matches]
+  )
 
   return (
     <div className={`cc-root cc-${theme}`} style={{ position: 'relative', minHeight: '100vh', overflowX: 'hidden' }}>
@@ -248,10 +240,10 @@ function MarqueeContent({ m }) {
           textTransform: 'uppercase',
         }}
       >
-        <span style={{ color: 'var(--cc-gold)' }}>① Tonight</span>
+        <span style={{ color: 'var(--cc-gold)' }}>① {m.isToday ? 'Tonight' : (m.kickoffDateLabel || 'Up next')}</span>
         <span style={{ flex: 1, height: 1, background: 'var(--cc-line)' }} />
         <span>{m.league}{m.stage ? ` · ${m.stage}` : ''}</span>
-        {m.kickoff && <span>{m.kickoff} CET</span>}
+        {m.kickoff && <span>{m.kickoff} {tzAbbreviation()}</span>}
         {m.venue && <span style={{ color: 'var(--cc-text)' }}>{m.venue}</span>}
       </div>
 
@@ -675,7 +667,7 @@ function SnapCard({ m, idx }) {
             <LiveBadge minute={m.minute || 0} />
           ) : (
             <span className="mono tnum" style={{ fontSize: 10, color: 'var(--cc-muted)' }}>
-              {m.kickoff}
+              {m.isToday ? m.kickoff : `${m.kickoffDateLabel} · ${m.kickoff}`}
             </span>
           )}
         </div>

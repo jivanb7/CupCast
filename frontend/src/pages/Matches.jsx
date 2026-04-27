@@ -34,18 +34,9 @@ const RAIL = [
   { code: 'championship', label: 'EFL Champ', flag: '🏴' },
 ]
 
-// "Today" spans both UTC and the user's local date so a 23:00 CET kickoff
-// stored as today's UTC date still shows for a US viewer at 17:00 ET
-// (and vice-versa).
-function todayIsoSet() {
-  const now = new Date()
-  const utc = now.toISOString().slice(0, 10)
-  const local =
-    `${now.getFullYear()}-` +
-    `${String(now.getMonth() + 1).padStart(2, '0')}-` +
-    `${String(now.getDate()).padStart(2, '0')}`
-  return new Set([utc, local])
-}
+// "Today" is computed off the kickoff timestamp converted to the viewer's
+// local timezone (Pacific by default — see lib/time.js). The adapter sets
+// `m.isToday` for us; pages just consume it.
 
 export default function Matches() {
   const [theme, setTheme] = useCCTheme()
@@ -66,9 +57,7 @@ export default function Matches() {
     return matches.filter((m) => {
       if (leagueCode !== 'ALL' && m.leagueCode !== leagueCode) return false
       if (tab === 'TODAY') {
-        if (m.status === 'LIVE') return true
-        const todays = todayIsoSet()
-        return todays.has((m.matchDate || '').slice(0, 10))
+        return m.status === 'LIVE' || m.isToday
       }
       if (tab === 'LIVE') return m.status === 'LIVE'
       if (tab === 'UPCOMING') return m.status === 'UPCOMING'
@@ -306,7 +295,9 @@ function MatchCardEd({ m, idx, feature }) {
           {isLive ? (
             <LiveBadge minute={m.minute || 0} />
           ) : (
-            <span className="mono tnum" style={{ fontSize: 11, color: 'var(--cc-muted)' }}>{m.kickoff}</span>
+            <span className="mono tnum" style={{ fontSize: 11, color: 'var(--cc-muted)' }}>
+              {m.isToday ? m.kickoff : `${m.kickoffDateLabel} · ${m.kickoff}`}
+            </span>
           )}
         </div>
 
