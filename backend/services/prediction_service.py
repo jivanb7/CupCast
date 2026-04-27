@@ -514,9 +514,12 @@ def generate_batch_predictions(db) -> int:
         1 for r in upcoming_rows
         if r["odds_home"] is not None and r["odds_away"] is not None
     )
-    logger.info(
-        "Odds injected on %d/%d upcoming rows (rest fall back to neutral imputation)",
-        odds_present, len(upcoming_rows),
+    # WARNING-level so the Cloud Run default log filter actually surfaces this.
+    # If `odds_present == 0` after the second regen, the odds_by_match dict is
+    # empty — likely the SQL filter on Prediction.match_id missed something.
+    logger.warning(
+        "[PREDICT] Odds injected on %d/%d upcoming rows (odds_by_match size=%d)",
+        odds_present, len(upcoming_rows), len(odds_by_match),
     )
 
     if not upcoming_rows:
