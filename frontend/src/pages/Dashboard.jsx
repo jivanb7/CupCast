@@ -948,6 +948,30 @@ function RollingChart({ data }) {
 // ──────────────────────────────────────────────────────────────────────
 
 function Section4Value({ picks, loading }) {
+  // Pre-compute the WHY line for each card with a shared excludeIds Set so
+  // consecutive cards can't repeat the same template — fixes the issue
+  // where two/three value picks would all show the same "Tempo is the
+  // silent variable…" or "Sub-40% call…" wording. Hooks must run on every
+  // render, so this lives BEFORE any early-return branches.
+  const reasonTexts = useMemo(() => {
+    const used = new Set()
+    return (picks || []).map((v) => {
+      const bullets = pickFor(
+        {
+          id: v.id,
+          home: v.match.split(' v ')[0],
+          away: v.match.split(' v ')[1],
+          callTeam: v.pick,
+          fairOdds: v.fairOdds,
+          marketOdds: v.marketOdds,
+        },
+        1,
+        { excludeIds: used },
+      )
+      return bullets[0] || `The model has ${v.pick} at ${v.conf}% — the book is mispriced.`
+    })
+  }, [picks])
+
   if (loading) {
     return (
       <section style={{ maxWidth: 980, margin: '0 auto', padding: '48px 40px 60px' }}>
@@ -985,29 +1009,6 @@ function Section4Value({ picks, loading }) {
       </section>
     )
   }
-  // Pre-compute the WHY line for each card with a shared excludeIds Set so
-  // consecutive cards can't repeat the same template — fixes the issue
-  // where two/three value picks would all show the same "Tempo is the
-  // silent variable…" or "Sub-40% call…" wording.
-  const reasonTexts = useMemo(() => {
-    const used = new Set()
-    return picks.map((v) => {
-      const bullets = pickFor(
-        {
-          id: v.id,
-          home: v.match.split(' v ')[0],
-          away: v.match.split(' v ')[1],
-          callTeam: v.pick,
-          fairOdds: v.fairOdds,
-          marketOdds: v.marketOdds,
-        },
-        1,
-        { excludeIds: used },
-      )
-      return bullets[0] || `The model has ${v.pick} at ${v.conf}% — the book is mispriced.`
-    })
-  }, [picks])
-
   return (
     <section style={{ maxWidth: 980, margin: '0 auto', padding: '48px 40px 60px' }}>
       {picks.map((v, i) => (
