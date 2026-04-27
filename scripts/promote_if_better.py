@@ -68,10 +68,21 @@ MODEL_TYPES = {
 # to say. Set to a positive value if churn becomes a problem.
 DEFAULT_MARGIN = 0.0
 
-# Default gating metric. The training pipeline logs `val_log_loss` for every
-# model flavor; picking this metric means we gate on the same quantity used
-# to select the best flavor in training.
-DEFAULT_METRIC = "val_log_loss"
+# Default gating metric. Aligned with how train_remote.py picks "best" —
+# accuracy is the user-facing definition of model quality. log_loss stays
+# available as an alt metric (--metric val_log_loss) and lower-is-better
+# is auto-detected from the metric name.
+DEFAULT_METRIC = "val_accuracy"
+
+
+def _higher_is_better(metric_name: str) -> bool:
+    """Direction of the gating metric. Accuracy/F1/AUC: higher is better.
+    Log-loss/Brier: lower is better. Defaults to lower-is-better for
+    unknown metrics to stay safe."""
+    name = metric_name.lower()
+    if any(k in name for k in ("accuracy", "f1", "auc", "precision", "recall")):
+        return True
+    return False
 
 
 @dataclass
@@ -409,11 +420,21 @@ def decide_and_promote(
             client.set_registered_model_alias(name=model_name, alias="prod", version=str(new_version))
         return _build_decision(True, reason)
 
-    # Lower log-loss is better. Require new <= current * (1 - margin).
-    threshold = current_metric * (1.0 - margin)
-    if new_metric <= threshold:
+    higher_better = _higher_is_better(metric)
+    if higher_better:
+        # Accuracy / F1 / AUC: new must be ≥ current * (1 + margin)
+        threshold = current_metric * (1.0 + margin)
+        passes = new_metric >= threshold
+        compare_op_pass, compare_op_fail = "≥", "<"
+    else:
+        # Log-loss / Brier: new must be ≤ current * (1 - margin)
+        threshold = current_metric * (1.0 - margin)
+        passes = new_metric <= threshold
+        compare_op_pass, compare_op_fail = "≤", ">"
+
+    if passes:
         reason = (
-            f"new {metric}={new_metric:.4f} ≤ {threshold:.4f} "
+            f"new {metric}={new_metric:.4f} {compare_op_pass} {threshold:.4f} "
             f"(current={current_metric:.4f}, margin={margin:.1%}) — promoting"
         )
         if not dry_run:
@@ -421,7 +442,7 @@ def decide_and_promote(
         return _build_decision(True, reason)
 
     reason = (
-        f"new {metric}={new_metric:.4f} > {threshold:.4f} "
+        f"new {metric}={new_metric:.4f} {compare_op_fail} {threshold:.4f} "
         f"(current={current_metric:.4f}, margin={margin:.1%}) — keeping @prod=v{current_version}"
     )
     return _build_decision(False, reason)

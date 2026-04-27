@@ -107,13 +107,13 @@ jobs:
 
       # Promotion gate runs only when training actually happened. A 'data-only'
       # or 'predict-only' manual run should skip it — nothing new to promote.
-      - name: Promote new club model if better (val_log_loss)
+      - name: Promote new club model if better (val_accuracy)
         if: ${{ github.event.inputs.mode == null || github.event.inputs.mode == 'full' || github.event.inputs.mode == 'train-only' }}
         run: |
           python scripts/promote_if_better.py \
             --model-type club \
-            --metric val_log_loss \
-            --margin ${{ github.event.inputs.promote_margin || '0.01' }}
+            --metric val_accuracy \
+            --margin ${{ github.event.inputs.promote_margin || '0.0' }}
         env:
           MLFLOW_TRACKING_URI: ${{ secrets.MLFLOW_TRACKING_URI }}
           MLFLOW_TRACKING_USERNAME: ${{ secrets.MLFLOW_TRACKING_USERNAME }}
@@ -125,13 +125,13 @@ jobs:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           PYTHONPATH: .
 
-      - name: Promote new international model if better (val_log_loss)
+      - name: Promote new international model if better (val_accuracy)
         if: ${{ github.event.inputs.mode == null || github.event.inputs.mode == 'full' || github.event.inputs.mode == 'train-only' }}
         run: |
           python scripts/promote_if_better.py \
             --model-type intl \
-            --metric val_log_loss \
-            --margin ${{ github.event.inputs.promote_margin || '0.01' }}
+            --metric val_accuracy \
+            --margin ${{ github.event.inputs.promote_margin || '0.0' }}
         env:
           MLFLOW_TRACKING_URI: ${{ secrets.MLFLOW_TRACKING_URI }}
           MLFLOW_TRACKING_USERNAME: ${{ secrets.MLFLOW_TRACKING_USERNAME }}
