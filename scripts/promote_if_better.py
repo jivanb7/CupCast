@@ -362,7 +362,7 @@ def decide_and_promote(
         )
         return PromotionDecision(
             promoted=False,
-            reason=f"missing metric {metric!r} on new version — keeping @prod=v{current_version if current_version else '?'}",
+            reason=f"missing metric {metric!r} on new version — keeping current @prod",
             new_version=new_version, new_metric=None,
             current_version=None, current_metric=None,
             new_run_id=latest_run.info.run_id,
@@ -422,6 +422,88 @@ def decide_and_promote(
     return _build_decision(False, reason)
 
 
+def _sync_current_prod_to_db(
+    client: MlflowClient,
+    model_type: str,
+    model_name: str,
+) -> Optional[str]:
+    """If MLflow has a @prod alias but the model_registry table has no
+    matching is_production row (typical when an earlier promotion ran
+    before DATABASE_URL was wired up), write a row reflecting the current
+    served model so the /model header stops showing 'v0.1.0-dev'.
+
+    This is purely a "label catch-up" — it does not flip MLflow aliases.
+    """
+    db_url = os.environ.get("DATABASE_URL")
+    if not db_url:
+        return None
+    db_model_name = DB_MODEL_NAME_BY_TYPE.get(model_type)
+    if not db_model_name:
+        return None
+    try:
+        prod = client.get_model_version_by_alias(name=model_name, alias="prod")
+    except Exception:
+        return None
+    if not prod or not prod.run_id:
+        return None
+    try:
+        run = client.get_run(prod.run_id)
+    except Exception:
+        return None
+
+    arch_label = _human_arch_from_run_name(
+        run.data.tags.get("mlflow.runName") if run.data.tags else None
+    )
+
+    try:
+        from sqlalchemy import create_engine, text
+        engine = create_engine(db_url, pool_pre_ping=True)
+        with engine.begin() as conn:
+            existing = conn.execute(
+                text(
+                    "SELECT mlflow_run_id FROM model_registry "
+                    "WHERE model_name = :n AND is_production = TRUE"
+                ),
+                {"n": db_model_name},
+            ).first()
+            if existing and existing[0] == prod.run_id:
+                return None  # already in sync
+            base = _bump_version(existing[0] if existing else None)
+            # Reuse the version-bump rule: if the table is empty, this
+            # writes v0.2.0 (so the user sees an immediate change away
+            # from v0.1.0-dev).
+            new_label = f"{base}-{arch_label}" if arch_label else base
+            conn.execute(
+                text("UPDATE model_registry SET is_production = FALSE WHERE model_name = :n"),
+                {"n": db_model_name},
+            )
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO model_registry
+                        (model_name, model_version, mlflow_run_id,
+                         accuracy, f1_macro, log_loss,
+                         is_production, trained_at)
+                    VALUES
+                        (:name, :ver, :run_id, :acc, :f1, :ll, TRUE, NOW())
+                    """
+                ),
+                {
+                    "name": db_model_name,
+                    "ver": new_label,
+                    "run_id": prod.run_id,
+                    "acc": run.data.metrics.get("val_accuracy"),
+                    "f1": run.data.metrics.get("val_f1_macro"),
+                    "ll": run.data.metrics.get("val_log_loss"),
+                },
+            )
+        logger.info("Synced model_registry to current @prod: %s = %s", db_model_name, new_label)
+        return new_label
+    except Exception:
+        logger.exception("model_registry sync failed (DB-only; MLflow alias unchanged)")
+        return None
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model-type", required=True, choices=list(MODEL_TYPES))
@@ -460,6 +542,18 @@ def main() -> int:
     logger.info("[%s] %s", tag, decision.reason)
     if decision.promoted and decision.db_label:
         logger.info("model_registry now serves %s as %s", args.model_type, decision.db_label)
+    elif not decision.promoted:
+        # Backfill the model_registry row for the existing @prod if it
+        # somehow drifted out of sync (e.g., a previous promotion ran
+        # before DATABASE_URL was plumbed through). Cheap idempotent op.
+        try:
+            _, model_name = MODEL_TYPES[args.model_type]
+            client = MlflowClient()
+            synced = _sync_current_prod_to_db(client, args.model_type, model_name)
+            if synced:
+                logger.info("model_registry catch-up label: %s = %s", args.model_type, synced)
+        except Exception:
+            logger.exception("model_registry catch-up sync failed (non-fatal)")
     # Emit a concise machine-readable summary for CI log searchability.
     print(
         f"promotion_result model={args.model_type} "
