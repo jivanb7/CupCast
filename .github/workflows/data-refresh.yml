@@ -46,6 +46,13 @@ jobs:
   refresh:
     runs-on: ubuntu-latest
     timeout-minutes: 90
+    # Required for Workload Identity Federation auth to GCP. Without this
+    # `permissions: id-token: write` the google-github-actions/auth step
+    # below fails to mint a JWT and downstream GCS calls run anonymously,
+    # which breaks every mlflow.*.log_model() upload.
+    permissions:
+      contents: read
+      id-token: write
 
     steps:
       - uses: actions/checkout@v4
@@ -53,6 +60,18 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+
+      # Authenticate to GCP via Workload Identity Federation. MLflow's
+      # tracking server stores artifacts in gs:// — without this auth step
+      # `mlflow.xgboost.log_model` (and friends) fails with
+      # "Anonymous credentials cannot be refreshed" mid-training.
+      - id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+
+      - uses: google-github-actions/setup-gcloud@v2
 
       - name: Install ML dependencies
         run: pip install -r ml/requirements.txt
