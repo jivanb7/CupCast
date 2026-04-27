@@ -495,7 +495,13 @@ def generate_batch_predictions(db) -> int:
             "match_date": pd.Timestamp(match.match_date),
             "home_team": home_team.canonical_name,
             "away_team": away_team.canonical_name,
-            "home_goals": 0, "away_goals": 0,
+            # NaN goals (not 0) so feature_engineering's
+            # `if pd.isna(hg) or pd.isna(ag): continue` skips Elo/standings
+            # updates for upcoming rows. Previously goals=0 was treated as
+            # a real 0-0 draw, which corrupted the running Elo state across
+            # batches of upcoming matches and caused single-match vs batch
+            # predictions to disagree.
+            "home_goals": np.nan, "away_goals": np.nan,
             "result": "H", "result_encoded": 0,  # Dummy — won't be used
             "league_code": ml_league_code,
             "season": "2025-26",
@@ -514,12 +520,9 @@ def generate_batch_predictions(db) -> int:
         1 for r in upcoming_rows
         if r["odds_home"] is not None and r["odds_away"] is not None
     )
-    # WARNING-level so the Cloud Run default log filter actually surfaces this.
-    # If `odds_present == 0` after the second regen, the odds_by_match dict is
-    # empty — likely the SQL filter on Prediction.match_id missed something.
-    logger.warning(
-        "[PREDICT] Odds injected on %d/%d upcoming rows (odds_by_match size=%d)",
-        odds_present, len(upcoming_rows), len(odds_by_match),
+    logger.info(
+        "Odds injected on %d/%d upcoming rows (rest fall back to neutral imputation)",
+        odds_present, len(upcoming_rows),
     )
 
     if not upcoming_rows:
@@ -628,16 +631,46 @@ def generate_batch_predictions(db) -> int:
                 probs = club_model.predict_proba(row_df)[0]
             else:
                 probs = club_model.predict_proba(X_arr)[0]
-            pred_class = int(np.argmax(probs))
-            predicted_result = INT_TO_RESULT.get(pred_class, "H")
-            confidence = float(probs[pred_class])
 
-            # Use real odds for edge computation when available — otherwise
-            # value-pick detection silently runs against null and returns
-            # "no value" for every match.
+            # ── Book-anchored blend ────────────────────────────────────────
+            # The trained club model alone produces unreliable extremes
+            # (Espanyol 84% > Real Madrid, Bayern 33% < Heidenheim) because
+            # val_accuracy is ~0.51 and the RandomForest collapses toward
+            # the marginal class prior on lopsided matchups. Until the model
+            # is retrained to do better than the bookmaker, we anchor heavily
+            # to the vig-removed book probabilities when odds are present.
+            # The model still nudges the output (BOOK_WEIGHT < 1) so team-
+            # strength signals like injuries / form / Elo can move the call
+            # off the book, but it can no longer flip the favorite.
             row_odds_h, row_odds_d, row_odds_a = odds_by_match.get(
                 match.id, (None, None, None)
             )
+            # 0.85 book / 0.15 model — heavy book anchor per user direction
+            # ("we should heavily be utilizing the bookmaker odds"). At this
+            # weight Espanyol-vs-Madrid blend goes Real-Madrid 47% (correct
+            # call) and Bayern-vs-Heidenheim goes Bayern 73% — matches reality
+            # while still letting model signals like Elo + key-player
+            # availability shift the call by ~5–10pp from the book.
+            BOOK_WEIGHT = 0.85
+            try:
+                if (
+                    row_odds_h and row_odds_d and row_odds_a
+                    and row_odds_h > 0 and row_odds_d > 0 and row_odds_a > 0
+                ):
+                    raw = np.array([1.0 / row_odds_h, 1.0 / row_odds_d, 1.0 / row_odds_a])
+                    book_probs = raw / raw.sum()  # vig removed
+                    blended = BOOK_WEIGHT * book_probs + (1.0 - BOOK_WEIGHT) * np.asarray(probs)
+                    blended = blended / blended.sum()
+                    probs = blended
+            except Exception:
+                logger.exception(
+                    "book-blend failed for match %d — falling back to raw model probs",
+                    match.id,
+                )
+
+            pred_class = int(np.argmax(probs))
+            predicted_result = INT_TO_RESULT.get(pred_class, "H")
+            confidence = float(probs[pred_class])
             edge_result = compute_edge(
                 prob_home=float(probs[0]),
                 prob_draw=float(probs[1]),
