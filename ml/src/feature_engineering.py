@@ -733,7 +733,17 @@ def compute_team_strength_features(matches_df: pd.DataFrame) -> pd.DataFrame:
         away_ppgs.append(a_state["pts"] / max(a_state["games"], 1))
         n_teams_per_match.append(n_teams)
 
-        # Post-match updates (skip if unplayed)
+        # Post-match updates (skip if unplayed). The prediction service
+        # appends upcoming rows with home_goals=0/away_goals=0 as dummies
+        # plus an `is_upcoming` flag — without this guard the Elo + season
+        # standings ran an UPDATE for every upcoming match as if it were
+        # a real 0-0 draw, which corrupted ratings across batched
+        # predictions (Bayern's emitted Elo for one fixture would shift
+        # depending on how many other Bayern fixtures were batched ahead
+        # of it). NaN goals would be a cleaner sentinel but break Int64
+        # casts in data_processing, so we accept an explicit marker.
+        if r.get("is_upcoming") is True:
+            continue
         hg = r.get("home_goals")
         ag = r.get("away_goals")
         if pd.isna(hg) or pd.isna(ag):

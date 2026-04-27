@@ -495,13 +495,13 @@ def generate_batch_predictions(db) -> int:
             "match_date": pd.Timestamp(match.match_date),
             "home_team": home_team.canonical_name,
             "away_team": away_team.canonical_name,
-            # NaN goals (not 0) so feature_engineering's
-            # `if pd.isna(hg) or pd.isna(ag): continue` skips Elo/standings
-            # updates for upcoming rows. Previously goals=0 was treated as
-            # a real 0-0 draw, which corrupted the running Elo state across
-            # batches of upcoming matches and caused single-match vs batch
-            # predictions to disagree.
-            "home_goals": np.nan, "away_goals": np.nan,
+            # Goals = 0 is a dummy; the is_upcoming flag is what tells
+            # compute_team_strength_features to skip the Elo + standings
+            # update on this row. NaN goals would be cleaner but break
+            # several downstream Int64 casts in data processing, so we
+            # carry an explicit marker instead.
+            "home_goals": 0, "away_goals": 0,
+            "is_upcoming": True,
             "result": "H", "result_encoded": 0,  # Dummy — won't be used
             "league_code": ml_league_code,
             "season": "2025-26",
