@@ -19,13 +19,26 @@ import { Link } from 'react-router-dom';
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
-// Convert an ISO 3166-1 alpha-2 country code into a flag emoji using the
-// regional-indicator unicode trick. Returns '' on bad input so callers can
-// safely concatenate without checking.
+// Convert a country code into its flag emoji.
+// - Standard ISO 3166-1 alpha-2 ("us", "es", "br") → regional-indicator
+//   pair (🇺🇸, 🇪🇸, 🇧🇷).
+// - GB subdivisions ("gb-eng", "gb-sct", "gb-wls") → Unicode tag-sequence
+//   black-flag emoji 🏴󠁧󠁢󠁥󠁮󠁧󠁿 / 🏴󠁳󠁣󠁴󠁿 / 🏴󠁷󠁬󠁳󠁿. Apple/Google/iOS render these natively;
+//   on platforms that don't, the user sees a black waving flag — still
+//   distinct from the "no data" bullet placeholder.
+const SUBDIVISION_FLAGS = {
+  'gb-eng': '\u{1F3F4}\u{E0067}\u{E0062}\u{E0065}\u{E006E}\u{E0067}\u{E007F}',
+  'gb-sct': '\u{1F3F4}\u{E0067}\u{E0062}\u{E0073}\u{E0063}\u{E0074}\u{E007F}',
+  'gb-wls': '\u{1F3F4}\u{E0067}\u{E0062}\u{E0077}\u{E006C}\u{E0073}\u{E007F}',
+  'gb-nir': '\u{1F3F4}\u{E0067}\u{E0062}\u{E006E}\u{E0069}\u{E0072}\u{E007F}',
+};
+
 function flagEmoji(countryCode) {
   if (!countryCode) return '';
-  const cc = String(countryCode).trim().toUpperCase();
-  if (cc.length !== 2 || !/^[A-Z]{2}$/.test(cc)) return '';
+  const code = String(countryCode).trim().toLowerCase();
+  if (SUBDIVISION_FLAGS[code]) return SUBDIVISION_FLAGS[code];
+  if (!/^[a-z]{2}$/.test(code)) return '';
+  const cc = code.toUpperCase();
   const A = 0x1f1e6;
   return String.fromCodePoint(A + (cc.charCodeAt(0) - 65), A + (cc.charCodeAt(1) - 65));
 }

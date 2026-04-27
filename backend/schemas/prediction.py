@@ -60,6 +60,22 @@ class LeagueWindowDelta(BaseModel):
     n_prior: int = 0
 
 
+class BaselineComparison(BaseModel):
+    """Reference baselines on the same evaluated set the model is scored on.
+
+    All fields are accuracy fractions (0..1) over the rows that have a
+    completed result. ``random`` is the trivial 1/3 floor for a 3-way pick;
+    ``naive_home`` is "always predict home team wins"; ``market_implied``
+    is the bookmaker's pick (the outcome with the shortest odds), only
+    populated for rows where odds_home/draw/away exist.
+    """
+    random: float = 0.3333
+    naive_home: Optional[float] = None
+    market_implied: Optional[float] = None
+    n_naive_home: int = 0
+    n_market: int = 0
+
+
 class ModelPerformanceResponse(BaseModel):
     overall_accuracy: float
     overall_f1_macro: float
@@ -72,3 +88,4 @@ class ModelPerformanceResponse(BaseModel):
     correct_predictions: int
     model_version: str
     last_trained: Optional[str] = None
+    baselines: BaselineComparison = BaselineComparison()

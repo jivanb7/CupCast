@@ -21,7 +21,7 @@ from models.league import League
 from models.match import Match
 from models.model_registry import ModelRegistry
 from models.prediction import Prediction
-from schemas.prediction import LeagueWindowDelta, ModelPerformanceResponse
+from schemas.prediction import BaselineComparison, LeagueWindowDelta, ModelPerformanceResponse
 
 router = APIRouter(prefix="/model", tags=["model"])
 
@@ -185,6 +185,38 @@ def get_model_performance(db: Session = Depends(get_db)):
         for day, s in daily_stats.items()
     ], key=lambda x: x.date)
 
+    # Baselines on the same evaluated set ──────────────────────────────
+    # naive_home: how often the home team would have been right if we
+    # always picked them. market_implied: how often the bookmaker's
+    # shortest-odds pick was right (skipped on rows missing odds).
+    naive_home_correct = 0
+    naive_home_total = 0
+    market_correct = 0
+    market_total = 0
+    for pred, match in evaluated_preds:
+        if not match.result:
+            continue
+        naive_home_total += 1
+        if match.result == "H":
+            naive_home_correct += 1
+        oh, od, oa = pred.odds_home, pred.odds_draw, pred.odds_away
+        if oh is None or od is None or oa is None:
+            continue
+        # Lowest decimal odds = book's pick. Tie-break: prefer H over D over A.
+        odds_map = (("H", oh), ("D", od), ("A", oa))
+        book_pick = min(odds_map, key=lambda kv: (kv[1], "HDA".index(kv[0])))[0]
+        market_total += 1
+        if book_pick == match.result:
+            market_correct += 1
+
+    baselines = BaselineComparison(
+        random=round(1 / 3, 4),
+        naive_home=round(naive_home_correct / naive_home_total, 4) if naive_home_total else None,
+        market_implied=round(market_correct / market_total, 4) if market_total else None,
+        n_naive_home=naive_home_total,
+        n_market=market_total,
+    )
+
     # Accuracy last 30 days
     cutoff = date.today() - timedelta(days=30)
     recent_preds = [
@@ -208,6 +240,7 @@ def get_model_performance(db: Session = Depends(get_db)):
         correct_predictions=correct,
         model_version=model_version,
         last_trained=last_trained,
+        baselines=baselines,
     )
 
 

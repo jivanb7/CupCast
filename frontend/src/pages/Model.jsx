@@ -74,7 +74,7 @@ export default function Model() {
             <EmptyPanel kind="calibrating"/>
           </Panel>
           <Panel title="MODEL VS BASELINES">
-            <BigCompare modelAcc={data?.accuracy ?? null}/>
+            <BigCompare modelAcc={data?.accuracy ?? null} baselines={data?.baselines}/>
           </Panel>
           <Panel title="RECENT CALLS · LAST 8" noPad>
             <RecentCalls matches={recent} loading={recentLoading} error={recentError}/>
@@ -94,7 +94,26 @@ function headerLine(data, loading, fatal) {
   if (loading) return 'LOADING MODEL METRICS …'
   if (fatal || !data) return 'MODEL FEED UNAVAILABLE'
   const days = data.lastWeek?.length || 0
-  return `${data.accuracy.toFixed(1)}% ACCURACY · ${days}D WINDOW · F1 ${data.f1Macro.toFixed(3)} · LOG LOSS ${data.logLoss.toFixed(3)}`
+  const trained = data.lastTrained ? formatTrainedAt(data.lastTrained) : null
+  const version = data.modelVersion || 'v?'
+  const acc = `${data.accuracy.toFixed(1)}% ACCURACY · ${days}D WINDOW`
+  const stats = `F1 ${data.f1Macro.toFixed(3)} · LOG LOSS ${data.logLoss.toFixed(3)}`
+  const tail = trained ? `${version.toUpperCase()} · TRAINED ${trained}` : `${version.toUpperCase()}`
+  return `${acc} · ${stats} · ${tail}`
+}
+
+function formatTrainedAt(iso) {
+  try {
+    const d = new Date(iso)
+    if (Number.isNaN(d.getTime())) return ''
+    return new Intl.DateTimeFormat('en-US', {
+      year: 'numeric',
+      month: 'short',
+      day: 'numeric',
+    }).format(d).toUpperCase()
+  } catch {
+    return ''
+  }
 }
 
 function HeroAccuracy({ data, loading, fatal }) {
@@ -294,12 +313,28 @@ function LeagueTable({ rows, fatal, loading }) {
   )
 }
 
-function BigCompare({ modelAcc }) {
+function BigCompare({ modelAcc, baselines }) {
+  const b = baselines || {}
   const rows = [
-    { label: 'Model accuracy', value: modelAcc, color: 'gold' },
-    { label: 'Market implied',  value: null, color: 'muted' },
-    { label: 'Naive home',      value: null, color: 'dim' },
-    { label: 'Random',          value: null, color: 'dim' },
+    { label: 'Model accuracy', value: modelAcc, color: 'gold', sub: 'this model on the same evaluated set' },
+    {
+      label: 'Market implied',
+      value: b.marketImplied ?? null,
+      color: 'muted',
+      sub: b.nMarket ? `book's pick · ${b.nMarket} matches with odds` : 'odds feed catching up',
+    },
+    {
+      label: 'Naive home',
+      value: b.naiveHome ?? null,
+      color: 'dim',
+      sub: b.nNaiveHome ? `always-pick-home · ${b.nNaiveHome} matches` : 'no completed sample',
+    },
+    {
+      label: 'Random',
+      value: b.random ?? 33.3,
+      color: 'dim',
+      sub: '1-in-3 floor for any 3-way pick',
+    },
   ]
   return (
     <div style={{padding:'10px 0'}}>
@@ -321,11 +356,9 @@ function BigCompare({ modelAcc }) {
                 <div style={{height:'100%', width: `${row.value}%`, background: barColor}}/>
               )}
             </div>
-            {!hasValue && (
-              <div className="mono" style={{fontSize: 9, color:'var(--cc-dim)', letterSpacing:'0.08em', marginTop: 4}}>
-                BASELINE NOT EXPOSED
-              </div>
-            )}
+            <div className="mono" style={{fontSize: 9, color:'var(--cc-dim)', letterSpacing:'0.08em', marginTop: 4}}>
+              {row.sub}
+            </div>
           </div>
         )
       })}

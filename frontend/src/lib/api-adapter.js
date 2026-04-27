@@ -206,6 +206,18 @@ export function adaptModelPerformance(api) {
   const recentAcc = recentTotal > 0 ? (recentCorrect / recentTotal) * 100 : overallAcc
   const accuracyDelta = +(recentAcc - overallAcc).toFixed(1)
 
+  // Baselines: backend exposes 0..1 fractions; flatten to 0..100 percentages
+  // and pass through the n-counts so the page can show "—" if a baseline
+  // wasn't computable (e.g. market baseline with zero rows carrying odds).
+  const b = api.baselines || {}
+  const baselines = {
+    random: b.random != null ? +(Number(b.random) * 100).toFixed(1) : 33.3,
+    naiveHome: b.naive_home != null ? +(Number(b.naive_home) * 100).toFixed(1) : null,
+    marketImplied: b.market_implied != null ? +(Number(b.market_implied) * 100).toFixed(1) : null,
+    nNaiveHome: b.n_naive_home || 0,
+    nMarket: b.n_market || 0,
+  }
+
   return {
     accuracy: +overallAcc.toFixed(1),
     accuracyDelta,
@@ -215,6 +227,11 @@ export function adaptModelPerformance(api) {
     logLoss: +(Number(api.overall_log_loss ?? 0)).toFixed(3),
     lastWeek,
     perLeague,
+    baselines,
+    modelVersion: api.model_version || null,
+    lastTrained: api.last_trained || null,
+    totalPredictions: api.total_predictions || 0,
+    correctPredictions: api.correct_predictions || 0,
   }
 }
 
