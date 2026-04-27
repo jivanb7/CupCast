@@ -396,6 +396,24 @@ def compute_context_features(
     history["prev_match_date"] = history.groupby("team")["match_date"].shift(1)
     history["days_since_last"] = (history["match_date"] - history["prev_match_date"]).dt.days
 
+    # Fixture congestion — number of matches a team played in the trailing
+    # 14 days, EXCLUDING the current match itself. A team in the middle of a
+    # UCL + league + cup week regularly plays 3–4 matches in 14 days, which
+    # correlates with rotation and under-performance in the next fixture.
+    # rolling("14D") on a date-indexed series includes the current row, so
+    # subtract 1 to exclude it. No leakage: only prior dates contribute.
+    history = history.reset_index(drop=True)
+
+    def _team_congestion(g: pd.DataFrame) -> pd.Series:
+        s = g.set_index("match_date")["match_idx"]
+        counts = s.rolling("14D").count() - 1
+        return pd.Series(counts.values, index=g.index)
+
+    history["matches_in_last_14d"] = (
+        history.groupby("team", group_keys=False).apply(_team_congestion)
+        .reindex(history.index).fillna(0).clip(lower=0)
+    )
+
     # Count historical matches per team (for is_new_team). Only PLAYED
     # matches contribute — otherwise an upcoming dummy bumps a team's count
     # past the new-team threshold and the model loses the "this team has
@@ -409,13 +427,21 @@ def compute_context_features(
     )
 
     # Home team rest
-    home_ctx = history[history["is_home"] == 1][["match_idx", "days_since_last", "match_count"]].rename(
-        columns={"days_since_last": "days_since_last_match_home", "match_count": "_home_match_count"}
-    )
+    home_ctx = history[history["is_home"] == 1][[
+        "match_idx", "days_since_last", "match_count", "matches_in_last_14d",
+    ]].rename(columns={
+        "days_since_last": "days_since_last_match_home",
+        "match_count": "_home_match_count",
+        "matches_in_last_14d": "matches_in_last_14d_home",
+    })
     # Away team rest
-    away_ctx = history[history["is_home"] == 0][["match_idx", "days_since_last", "match_count"]].rename(
-        columns={"days_since_last": "days_since_last_match_away", "match_count": "_away_match_count"}
-    )
+    away_ctx = history[history["is_home"] == 0][[
+        "match_idx", "days_since_last", "match_count", "matches_in_last_14d",
+    ]].rename(columns={
+        "days_since_last": "days_since_last_match_away",
+        "match_count": "_away_match_count",
+        "matches_in_last_14d": "matches_in_last_14d_away",
+    })
 
     ctx = home_ctx.merge(away_ctx, on="match_idx", how="outer")
 
@@ -423,6 +449,20 @@ def compute_context_features(
     ctx["days_since_last_match_home"] = ctx["days_since_last_match_home"].clip(upper=90).fillna(30)
     ctx["days_since_last_match_away"] = ctx["days_since_last_match_away"].clip(upper=90).fillna(30)
     ctx["rest_advantage"] = ctx["days_since_last_match_home"] - ctx["days_since_last_match_away"]
+
+    # Fill NaN congestion with 0 (no recent matches known) and cap at 6 to
+    # damp outliers from junior-tournament back-to-back fixtures.
+    ctx["matches_in_last_14d_home"] = ctx["matches_in_last_14d_home"].fillna(0).clip(upper=6)
+    ctx["matches_in_last_14d_away"] = ctx["matches_in_last_14d_away"].fillna(0).clip(upper=6)
+    ctx["congestion_diff"] = (
+        ctx["matches_in_last_14d_home"] - ctx["matches_in_last_14d_away"]
+    )
+
+    # Midweek match flag — Tuesday/Wednesday/Thursday matches typically
+    # mean cup or UCL midweek slots, which correlate with rotation and
+    # different outcome distributions vs weekend league play.
+    df["is_midweek"] = df["match_date"].dt.dayofweek.isin([1, 2, 3]).astype(int)
+    ctx = ctx.merge(df[["match_idx", "is_midweek"]], on="match_idx", how="left")
 
     # Season stage: approximate as match order within season for each league
     if "season" in df.columns and "league_code" in df.columns:
@@ -460,6 +500,9 @@ def compute_context_features(
         "match_idx", "days_since_last_match_home", "days_since_last_match_away",
         "rest_advantage", "season_stage", "is_derby", "is_covid_era",
         "is_new_team_home", "is_new_team_away",
+        # Fixture congestion + midweek flag — added 2026-04-27 for v9.
+        "matches_in_last_14d_home", "matches_in_last_14d_away",
+        "congestion_diff", "is_midweek",
     ]
     return ctx[keep_cols]
 
@@ -1033,6 +1076,14 @@ def build_feature_matrix(
         strength = compute_team_strength_features(df)
         features = features.merge(strength, on="match_idx", how="left")
 
+        # 5c. Pi-ratings (Constantinou & Fenton). Separate home/away skill
+        # per team — picks up on home-fortress vs road-warrior asymmetry
+        # that single-Elo can't express. Added 2026-04-27 for v9.
+        logger.info("  Computing pi-ratings...")
+        from ml.src.pi_ratings import attach_pi_ratings
+        pi = attach_pi_ratings(df)
+        features = features.merge(pi, on="match_idx", how="left")
+
         # Derived features
         features = _compute_derived_features(features)
 
@@ -1056,6 +1107,16 @@ def build_feature_matrix(
                 & odds_data["implied_prob_draw"].notna()
                 & odds_data["implied_prob_away"].notna()
             ).astype(int)
+            # Bookmaker overround = (1/oh + 1/od + 1/oa) - 1.0. Higher
+            # overround = wider spread / less liquid market / more vig
+            # baked in. Bookmakers tighten the margin on heavily-traded
+            # top-flight matches and widen it on lower-tier or volatile
+            # fixtures, so this is a useful "market liquidity" signal.
+            # Only meaningful when ALL three odds are present — otherwise
+            # leave as NaN so train-time imputation handles it instead of
+            # baking in a misleading negative floor from fillna(0).
+            _overround = raw_h + raw_d + raw_a - 1.0
+            odds_data["odds_overround"] = _overround
             features = features.merge(odds_data, on="match_idx", how="left")
         else:
             features["has_odds"] = 0

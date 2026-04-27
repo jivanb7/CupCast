@@ -139,6 +139,11 @@ CLUB_FEATURES = [
     # Context
     "days_since_last_match_home", "days_since_last_match_away", "rest_advantage",
     "season_stage", "is_derby", "is_covid_era", "is_new_team_home", "is_new_team_away",
+    # Fixture congestion + midweek flag (v9, 2026-04-27). 14-day match
+    # count picks up UCL+league+cup back-to-back rotation effects. Midweek
+    # flag separates Tue/Wed/Thu cup nights from weekend league play.
+    "matches_in_last_14d_home", "matches_in_last_14d_away",
+    "congestion_diff", "is_midweek",
     # Derived interaction features
     "form_diff_goals_scored", "form_diff_goals_conceded", "form_diff_points",
     "attack_vs_defense", "defense_vs_attack",
@@ -150,6 +155,9 @@ CLUB_FEATURES = [
     # learn to discount the odds row when the indicator is off, instead of
     # treating the imputed median as a real "we have no idea" signal.
     "has_odds",
+    # Bookmaker overround / vig — wider spread on lower-tier / volatile
+    # fixtures, tighter on liquid top-flight. Market-liquidity signal.
+    "odds_overround",
     # Team-level injury snapshot (from backend DB via scripts/export_injuries.py)
     "home_active_injuries", "away_active_injuries",
     "home_key_injuries", "away_key_injuries",
@@ -174,6 +182,13 @@ CLUB_FEATURES = [
     # has_injury_data — lets the model distinguish "all key players fit"
     # from "we don't track this team".
     "has_availability_data",
+    # Pi-ratings (Constantinou & Fenton 2013). Each team carries a
+    # separate Home-context skill (`pi_h`) and Away-context skill (`pi_a`),
+    # updated after every match with a sqrt-error-on-goal-diff diminishing
+    # rule (LAMBDA=0.054, GAMMA=0.30). Picks up the home-fortress vs
+    # road-warrior asymmetry that single-Elo can't express. Added v9.
+    "home_pi_h", "home_pi_a", "away_pi_h", "away_pi_a",
+    "pi_rating_diff_direct", "pi_rating_diff_overall",
 ]
 
 # ---------------------------------------------------------------------------
