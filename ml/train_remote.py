@@ -1042,8 +1042,9 @@ def run_training(model_type="club", n_trials=10):
     print(f"  MLflow UI: {TRACKING_URI}")
     print(f"{'='*60}")
     # Print sorted by the same composite key used to select best, so the
-    # leaderboard top is the same as the registered model.
-    for name, res in sorted(results.items(), key=_rank_key):
+    # leaderboard top is the same as the registered model. _rank_key takes
+    # a model NAME, so unwrap the (name, dict) tuple before applying it.
+    for name, res in sorted(results.items(), key=lambda kv: _rank_key(kv[0])):
         marker = " <-- BEST" if name == best_name else ""
         print(f"  {name:25s}  acc={res['accuracy']:.4f}  log_loss={res['log_loss']:.4f}  f1={res['f1_macro']:.4f}{marker}")
     print(f"{'='*60}\n")
