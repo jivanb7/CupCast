@@ -79,6 +79,14 @@ def main() -> int:
             return 1
 
         try:
+            from ml.src.data_freshness import check_freshness
+            check_freshness()
+        except Exception:
+            logger.exception("Data freshness check failed — refusing to "
+                             "retrain on stale data")
+            return 1
+
+        try:
             logger.info("=== Stage: Feature Engineering ===")
             from ml.src.feature_engineering import run_feature_engineering
             run_feature_engineering()
