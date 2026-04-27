@@ -599,6 +599,129 @@ def add_injury_features(
     return df
 
 
+def compute_team_strength_features(matches_df: pd.DataFrame) -> pd.DataFrame:
+    """Compute Elo + per-season league rank for every match.
+
+    These two feature sets give the model explicit awareness of structural
+    team strength — the thing that separates a "Bayern is in 1st place"
+    intuition from a "76 rolling-form numbers" reality. Both features
+    are computed sequentially over the match log, no external data
+    required, and emit values that are pre-match (no leakage).
+
+    Returns a DataFrame keyed by match_idx with these columns:
+      home_elo, away_elo, elo_diff
+      home_league_rank_norm, away_league_rank_norm, rank_diff
+      home_season_ppg, away_season_ppg, season_ppg_diff
+
+    `*_norm` is the rank scaled to [0.0, 1.0] where 1.0 = top of league.
+    A match between rank 1 and rank 18 in a 18-team league produces
+    rank_diff = +0.94 — a strong directional signal the model can pick up.
+    """
+    matches = matches_df.sort_values("match_date").reset_index(drop=True).copy()
+    if "match_idx" not in matches.columns:
+        matches["match_idx"] = np.arange(len(matches))
+
+    # ── Elo ──────────────────────────────────────────────────────────
+    K = 20.0          # standard chess Elo k-factor
+    HOME_BOOST = 60.0  # ~60 Elo home-field advantage; well-cited in football literature
+    BASE = 1500.0
+    elo: dict[str, float] = {}
+    home_elos = []
+    away_elos = []
+
+    # ── League standings ─────────────────────────────────────────────
+    # For each (league, season) compute rank-at-each-match. To keep this
+    # O(n_matches) we maintain a per-(league, season) running tally of
+    # points and games-played for every team encountered, then rank teams
+    # at each match's pre-match snapshot.
+    season_state: dict[tuple[str, str], dict[str, dict[str, int]]] = {}
+    home_rank_norms = []
+    away_rank_norms = []
+    home_ppgs = []
+    away_ppgs = []
+    n_teams_per_match = []
+
+    for _, r in matches.iterrows():
+        h = r["home_team"]
+        a = r["away_team"]
+        league = r.get("league_code", "?")
+        season = r.get("season", "?")
+        key = (league, season)
+
+        # Elo: emit pre-match ratings
+        rh = elo.get(h, BASE)
+        ra = elo.get(a, BASE)
+        home_elos.append(rh)
+        away_elos.append(ra)
+
+        # League standings: emit pre-match rank
+        state = season_state.setdefault(key, {})
+        ppg_by_team = {
+            t: (s["pts"] / s["games"]) if s["games"] > 0 else 0.0
+            for t, s in state.items()
+        }
+        n_teams = max(len(state), 2)
+        sorted_teams = sorted(ppg_by_team.items(), key=lambda kv: -kv[1])
+        rank = {t: i + 1 for i, (t, _) in enumerate(sorted_teams)}
+
+        h_rank = rank.get(h, n_teams)
+        a_rank = rank.get(a, n_teams)
+        # Normalize: top of table = 1.0, bottom = 0.0
+        h_norm = 1.0 - (h_rank - 1) / max(n_teams - 1, 1)
+        a_norm = 1.0 - (a_rank - 1) / max(n_teams - 1, 1)
+        home_rank_norms.append(h_norm)
+        away_rank_norms.append(a_norm)
+
+        h_state = state.get(h, {"pts": 0, "games": 0})
+        a_state = state.get(a, {"pts": 0, "games": 0})
+        home_ppgs.append(h_state["pts"] / max(h_state["games"], 1))
+        away_ppgs.append(a_state["pts"] / max(a_state["games"], 1))
+        n_teams_per_match.append(n_teams)
+
+        # Post-match updates (skip if unplayed)
+        hg = r.get("home_goals")
+        ag = r.get("away_goals")
+        if pd.isna(hg) or pd.isna(ag):
+            continue
+
+        # Elo update with home-field boost on the *home* side's expected score
+        rh_adj = rh + HOME_BOOST
+        expected_h = 1.0 / (1.0 + 10 ** ((ra - rh_adj) / 400))
+        if hg > ag:
+            actual_h = 1.0
+        elif hg < ag:
+            actual_h = 0.0
+        else:
+            actual_h = 0.5
+        delta = K * (actual_h - expected_h)
+        elo[h] = rh + delta
+        elo[a] = ra - delta
+
+        # Standings update
+        if hg > ag:
+            h_pts, a_pts = 3, 0
+        elif hg < ag:
+            h_pts, a_pts = 0, 3
+        else:
+            h_pts, a_pts = 1, 1
+        state[h] = {"pts": h_state["pts"] + h_pts, "games": h_state["games"] + 1}
+        state[a] = {"pts": a_state["pts"] + a_pts, "games": a_state["games"] + 1}
+
+    out = pd.DataFrame({
+        "match_idx": matches["match_idx"].values,
+        "home_elo": home_elos,
+        "away_elo": away_elos,
+        "elo_diff": np.array(home_elos) - np.array(away_elos),
+        "home_league_rank_norm": home_rank_norms,
+        "away_league_rank_norm": away_rank_norms,
+        "rank_diff": np.array(home_rank_norms) - np.array(away_rank_norms),
+        "home_season_ppg": home_ppgs,
+        "away_season_ppg": away_ppgs,
+        "season_ppg_diff": np.array(home_ppgs) - np.array(away_ppgs),
+    })
+    return out
+
+
 def _compute_derived_features(features_df: pd.DataFrame) -> pd.DataFrame:
     """Compute interaction / derived features from existing columns."""
     df = features_df.copy()
@@ -715,6 +838,13 @@ def build_feature_matrix(
         logger.info("  Computing shot stats...")
         shots = compute_shot_stats(df, window=5)
         features = features.merge(shots, on="match_idx", how="left")
+
+        # 5b. Team strength: Elo + per-season league rank. Gives the
+        # model explicit awareness of "Bayern is in 1st place" instead of
+        # just rolling-form numbers.
+        logger.info("  Computing team strength (Elo + league rank)...")
+        strength = compute_team_strength_features(df)
+        features = features.merge(strength, on="match_idx", how="left")
 
         # Derived features
         features = _compute_derived_features(features)

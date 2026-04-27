@@ -148,6 +148,13 @@ CLUB_FEATURES = [
     # Team-level injury snapshot (from backend DB via scripts/export_injuries.py)
     "home_active_injuries", "away_active_injuries",
     "home_key_injuries", "away_key_injuries",
+    # Team strength signals — added 2026-04-27 to give the model explicit
+    # awareness of "1st place vs last place" instead of relying only on
+    # rolling form. Computed sequentially over match history so no leakage:
+    # each row sees only what was known BEFORE that match.
+    "home_elo", "away_elo", "elo_diff",
+    "home_league_rank_norm", "away_league_rank_norm", "rank_diff",
+    "home_season_ppg", "away_season_ppg", "season_ppg_diff",
 ]
 
 # ---------------------------------------------------------------------------
