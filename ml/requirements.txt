@@ -4,6 +4,7 @@ pyarrow>=14.0.0
 scikit-learn>=1.7.0
 xgboost>=3.1.0
 lightgbm>=4.6.0
+catboost>=1.2.0
 optuna>=4.7.0
 mlflow>=3.10.0
 shap>=0.50.0
