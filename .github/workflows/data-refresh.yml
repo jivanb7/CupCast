@@ -165,19 +165,27 @@ jobs:
           PYTHONPATH: .
 
       # Kick the backend to regenerate predictions against whatever @prod
-      # resolves to now. The backend model cache is lazy + rebuilt on each
-      # cold start, so newly promoted weights are served by the next request;
-      # this step just ensures upcoming-match predictions reflect them
-      # immediately rather than on the next scheduled prediction run.
+      # resolves to now. Without this, prediction rows for upcoming matches
+      # stay stale until the daily cupcast-generate-predictions cron runs.
+      #
+      # URL is resolved via gcloud (the runner is already authenticated
+      # via WIF) instead of a BACKEND_URL secret. Previously the secret
+      # could be missing/empty and the step would silently skip — which is
+      # exactly what happened in attempt 14 (model promoted but predictions
+      # never updated). gcloud-derived URL is always current and never
+      # depends on a manually-managed secret.
       - name: Regenerate predictions on Cloud Run
         if: ${{ github.event.inputs.mode == null || github.event.inputs.mode == 'full' || github.event.inputs.mode == 'train-only' || github.event.inputs.mode == 'predict-only' }}
         run: |
           set -e
-          backend="${{ secrets.BACKEND_URL }}"
+          backend=$(gcloud run services describe cupcast-backend \
+            --region=us-west1 \
+            --format='value(status.url)' 2>/dev/null || echo "")
           if [ -z "$backend" ]; then
-            echo "BACKEND_URL secret missing; skipping prod-side regeneration." >&2
-            exit 0
+            echo "::error::Could not resolve cupcast-backend Cloud Run URL — predictions will refresh on next scheduled run instead"
+            exit 1
           fi
+          echo "Resolved backend URL: $backend"
           curl -fsS -X POST \
             -H "X-Admin-Key: ${{ secrets.ADMIN_API_KEY }}" \
             -H "Content-Type: application/json" \
