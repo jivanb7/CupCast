@@ -1,5 +1,6 @@
 # CupCast Data Refresh + Retrain Pipeline
-# Trigger: Monday 6AM UTC (after weekend matches complete)
+# Trigger: Monday 5AM UTC = Sunday 9PM PST (note: stays at 9PM during PST,
+# becomes 10PM during PDT — GitHub Actions cron is UTC-only and not DST-aware)
 # Also: manual trigger via workflow_dispatch
 #
 # Steps:
@@ -22,7 +23,7 @@ name: Data Refresh
 
 on:
   schedule:
-    - cron: "0 6 * * 1"  # Monday 6AM UTC
+    - cron: "0 5 * * 1"  # Monday 5AM UTC = Sunday 9PM PST
   workflow_dispatch:
     inputs:
       mode:
