@@ -58,10 +58,15 @@ MODEL_TYPES = {
     "intl": ("cupcast-international", "cupcast-international-model"),
 }
 
-# Default margin: new model's val_log_loss must be at least 1 % lower than
-# current @prod's to justify swapping. Tight enough to prevent churn from
-# stochastic training noise, loose enough that genuine improvements promote.
-DEFAULT_MARGIN = 0.01
+# Default margin: new model's val_log_loss must be at least this fraction
+# lower than current @prod's to justify swapping. The whole model family
+# in this codebase lives in val_log_loss 1.000–1.080 — a 1% margin (0.01
+# absolute) is comparable to run-to-run variance and rejected EVERY
+# fresh-data retrain we'd otherwise want to ship. Setting to 0 means any
+# real improvement, no matter how small, promotes — week-over-week the
+# fresh-data model will win the comparison if the data has anything new
+# to say. Set to a positive value if churn becomes a problem.
+DEFAULT_MARGIN = 0.0
 
 # Default gating metric. The training pipeline logs `val_log_loss` for every
 # model flavor; picking this metric means we gate on the same quantity used

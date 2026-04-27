@@ -80,11 +80,13 @@ mlflow.set_tracking_uri(TRACKING_URI)
 # ---------------------------------------------------------------------------
 RESULT_LABELS = ["H", "D", "A"]
 
-# Lowered from 3.0 → 1.0 based on the v5 phase1 recency-sweep results: the
-# 1-year half-life beat the 3-year baseline on test log-loss (1.0037 vs the
-# old 3y setting) without overfitting. Matches that are >2 seasons old
-# now contribute <0.25 weight to training.
-RECENCY_HALF_LIFE_YEARS = 1.0
+# Reverted to 3.0 from a brief 1.0 experiment: the v5 phase1 sweep ranked
+# 1.0 best on TEST log-loss, but in the production trainer it consistently
+# DEGRADED val log-loss (random_forest went from 1.0050 at 3y half-life to
+# 1.00799 at 1y on the same data). The promotion gate uses val log-loss,
+# so whatever helps test calibration but hurts val gets rejected.
+# Sticking with 3y until we can run a proper val-driven sweep.
+RECENCY_HALF_LIFE_YEARS = 3.0
 
 CLUB_TRAIN_END = "2022-06-01"
 CLUB_VAL_END = "2023-06-01"
