@@ -116,13 +116,21 @@ def compute_all_metrics(y_true, y_prob):
 
 
 def _safe_log_artifact(fig):
-    """Log a matplotlib figure as an MLflow artifact, handling remote artifact store gracefully."""
+    """Log a matplotlib figure as an MLflow artifact, handling remote artifact store gracefully.
+
+    Catches every exception path because the artifact store is gs://...:
+    if the runner doesn't have a service-account key the google-auth client
+    raises InvalidOperation (Anonymous credentials cannot be refreshed),
+    if the network blips it raises various google.api_core errors. None of
+    these should kill a training run — metrics are the load-bearing thing,
+    plots are nice-to-have.
+    """
     try:
         with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
             fig.savefig(f.name, dpi=100)
             mlflow.log_artifact(f.name, artifact_path="plots")
-    except OSError:
-        logger.warning("Artifact upload skipped (remote artifact store not writable from local)")
+    except Exception as e:
+        logger.warning(f"Artifact upload skipped: {type(e).__name__}: {e}")
 
 
 def log_confusion_matrix(y_true, y_pred):

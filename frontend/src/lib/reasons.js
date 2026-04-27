@@ -1089,7 +1089,386 @@ const TEMPLATES = [
     template: "Thin head-to-head record — the priors lean on the league baseline rather than fixture history.",
     fill: () => ({}),
   },
-]
+
+  // ════════════════════════════════════════════════════════════════════════
+  // EXPANSION POOL — magnitude-tagged variety. Every entry below declares
+  // its `magnitude` so loud language only fires on loud probabilities.
+  // Combined with the cross-card dedup in pickFor, the same phrase should
+  // not appear on consecutive cards in a single render.
+  // ════════════════════════════════════════════════════════════════════════
+
+  // ── Heavy favourite (loud, conf ≥ 60) ─────────────────────────────────
+  { id: 'x-heavy-1', category: 'prob', magnitude: 'loud', weight: 1.3,
+    fires: (c) => c.callConf >= 60 && !c.callIsDraw,
+    template: '{{call}} the headline at {{conf}}% — model rarely lands this confident outside derbies and mismatches.',
+    fill: (c) => ({ call: c.callTeam, conf: c.callConf }) },
+  { id: 'x-heavy-2', category: 'prob', magnitude: 'loud', weight: 1.2,
+    fires: (c) => c.callConf >= 60 && !c.callIsDraw,
+    template: 'Sims hand {{call}} {{conf}}% — second outcome doesn\'t crack {{second}}%, third is functionally noise.',
+    fill: (c) => ({ call: c.callTeam, conf: c.callConf, second: c.callConf - c.spread }) },
+  { id: 'x-heavy-3', category: 'prob', magnitude: 'loud', weight: 1.2,
+    fires: (c) => c.callConf >= 60 && !c.callIsDraw,
+    template: '{{call}} stack everything the model rewards — form, venue, defensive shape — into a {{conf}}% read.',
+    fill: (c) => ({ call: c.callTeam, conf: c.callConf }) },
+  { id: 'x-heavy-4', category: 'prob', magnitude: 'loud', weight: 1.1,
+    fires: (c) => c.callConf >= 65 && !c.callIsDraw,
+    template: '{{conf}}% is the kind of confidence the model produces a handful of times a season — {{call}} earned theirs today.',
+    fill: (c) => ({ call: c.callTeam, conf: c.callConf }) },
+  { id: 'x-heavy-5', category: 'prob', magnitude: 'loud', weight: 1.1,
+    fires: (c) => c.callConf >= 60 && !c.callIsDraw,
+    template: 'When the call clears 60%, historical hit-rate sits in the high 60s — {{call}} is in that bucket.',
+    fill: (c) => ({ call: c.callTeam }) },
+  { id: 'x-heavy-6', category: 'prob', magnitude: 'loud', weight: 1.0,
+    fires: (c) => c.callConf >= 60 && !c.callIsDraw,
+    template: 'No competing signal — every input nudges the same way and lands {{call}} at {{conf}}%.',
+    fill: (c) => ({ call: c.callTeam, conf: c.callConf }) },
+  { id: 'x-heavy-7', category: 'prob', magnitude: 'loud', weight: 1.0,
+    fires: (c) => c.callConf >= 70 && !c.callIsDraw,
+    template: '{{conf}}% calls happen roughly twice a month across the leagues we cover — flag this one and watch the closer.',
+    fill: (c) => ({ conf: c.callConf }) },
+  { id: 'x-heavy-8', category: 'prob', magnitude: 'loud', weight: 1.0,
+    fires: (c) => c.callConf >= 60 && !c.callIsDraw && c.spread >= 30,
+    template: '{{call}} {{conf}}% with a {{spread}}-point gap to the runner-up — distribution is essentially one-sided.',
+    fill: (c) => ({ call: c.callTeam, conf: c.callConf, spread: c.spread }) },
+  { id: 'x-heavy-9', category: 'prob', magnitude: 'loud', weight: 0.9,
+    fires: (c) => c.callConf >= 62 && !c.callIsDraw,
+    template: 'Top-bucket pick — every sub-model in the ensemble points at {{call}}.',
+    fill: (c) => ({ call: c.callTeam }) },
+  { id: 'x-heavy-10', category: 'prob', magnitude: 'loud', weight: 0.9,
+    fires: (c) => c.callConf >= 60 && !c.callIsDraw,
+    template: 'Distribution leaves the other two outcomes splitting {{rest}}% between them — {{call}} is the only realistic exit.',
+    fill: (c) => ({ call: c.callTeam, rest: 100 - c.callConf }) },
+
+  // ── Clear favourite (mid, conf 50–60) ────────────────────────────────
+  { id: 'x-clear-1', category: 'prob', magnitude: 'mid', weight: 1.0,
+    fires: (c) => c.callConf >= 50 && c.callConf < 60 && !c.callIsDraw,
+    template: '{{call}} priced as the favourite they should be — {{conf}}%, comfortable but not loud.',
+    fill: (c) => ({ call: c.callTeam, conf: c.callConf }) },
+  { id: 'x-clear-2', category: 'prob', magnitude: 'mid', weight: 1.0,
+    fires: (c) => c.callConf >= 50 && c.callConf < 60 && !c.callIsDraw,
+    template: 'Solid lean on {{call}} ({{conf}}%) without leaving room for "near-certain" wording — that\'s the right read.',
+    fill: (c) => ({ call: c.callTeam, conf: c.callConf }) },
+  { id: 'x-clear-3', category: 'prob', magnitude: 'mid', weight: 0.9,
+    fires: (c) => c.callConf >= 50 && c.callConf < 60 && !c.callIsDraw,
+    template: '{{conf}}% is where the model\'s historical hit-rate matches its number — {{call}} sits in that honest band.',
+    fill: (c) => ({ call: c.callTeam, conf: c.callConf }) },
+  { id: 'x-clear-4', category: 'prob', magnitude: 'mid', weight: 0.9,
+    fires: (c) => c.callConf >= 50 && c.callConf < 60 && !c.callIsDraw,
+    template: 'Clear call without overstating: {{call}} {{conf}}%, runner-up {{spread}}pp behind, third even further out.',
+    fill: (c) => ({ call: c.callTeam, conf: c.callConf, spread: c.spread }) },
+  { id: 'x-clear-5', category: 'prob', magnitude: 'mid', weight: 0.8,
+    fires: (c) => c.callConf >= 50 && c.callConf < 60 && !c.callIsDraw,
+    template: 'Comfortable favourite without the noise — {{call}} {{conf}}% is the model\'s default ‘we lean here\' tier.',
+    fill: (c) => ({ call: c.callTeam, conf: c.callConf }) },
+  { id: 'x-clear-6', category: 'prob', magnitude: 'mid', weight: 0.8,
+    fires: (c) => c.callConf >= 52 && c.callConf < 60 && !c.callIsDraw,
+    template: 'Above the publish-confidence floor without pushing into "stranglehold" territory — {{call}} {{conf}}%.',
+    fill: (c) => ({ call: c.callTeam, conf: c.callConf }) },
+
+  // ── Coin-flip / hedged (38–50) ───────────────────────────────────────
+  { id: 'x-flip-1', category: 'prob', magnitude: 'hedged', weight: 0.9,
+    fires: (c) => c.callConf >= 38 && c.callConf < 50 && !c.callIsDraw && c.spread < 8,
+    template: 'Functionally three plausible outcomes — {{call}} {{conf}}% is the slimmest of slim leads.',
+    fill: (c) => ({ call: c.callTeam, conf: c.callConf }) },
+  { id: 'x-flip-2', category: 'prob', magnitude: 'hedged', weight: 0.9,
+    fires: (c) => c.callConf >= 38 && c.callConf < 50 && !c.callIsDraw && c.spread < 8,
+    template: 'Top two outcomes inside {{spread}}pp — single break of play tilts the read.',
+    fill: (c) => ({ spread: c.spread }) },
+  { id: 'x-flip-3', category: 'prob', magnitude: 'hedged', weight: 0.8,
+    fires: (c) => c.callConf >= 38 && c.callConf < 50 && !c.callIsDraw,
+    template: 'Inside the band where the model\'s honest answer is "we don\'t know" — {{call}} the published lean at {{conf}}%.',
+    fill: (c) => ({ call: c.callTeam, conf: c.callConf }) },
+  { id: 'x-flip-4', category: 'prob', magnitude: 'hedged', weight: 0.8,
+    fires: (c) => c.callConf >= 38 && c.callConf < 50 && !c.callIsDraw,
+    template: 'Coin-flip distribution with a published call — {{call}} {{conf}}% is "least uncertain", not "most confident".',
+    fill: (c) => ({ call: c.callTeam, conf: c.callConf }) },
+  { id: 'x-flip-5', category: 'prob', magnitude: 'hedged', weight: 0.7,
+    fires: (c) => c.callConf >= 38 && c.callConf < 48 && !c.callIsDraw,
+    template: 'Match priced near a toss — every outcome has a real path, the headline is the marginal leader.',
+    fill: () => ({}) },
+  { id: 'x-flip-6', category: 'prob', magnitude: 'hedged', weight: 0.7,
+    fires: (c) => c.callConf >= 40 && c.callConf < 50 && !c.callIsDraw,
+    template: 'Three buckets, no clear gap — {{call}} {{conf}}% wins the publish slot but not the conviction slot.',
+    fill: (c) => ({ call: c.callTeam, conf: c.callConf }) },
+  { id: 'x-flip-7', category: 'prob', magnitude: 'hedged', weight: 0.7,
+    fires: (c) => c.callConf >= 38 && c.callConf < 50 && !c.callIsDraw && c.probD >= 25,
+    template: 'Three-way market with a fat draw bucket — {{call}} the call, but the third outcome is genuinely live.',
+    fill: (c) => ({ call: c.callTeam }) },
+
+  // ── Low-confidence / underdog call (< 38) ────────────────────────────
+  { id: 'x-low-1', category: 'prob', magnitude: 'hedged', weight: 0.9,
+    fires: (c) => c.callConf < 38 && !c.callIsDraw,
+    template: '{{call}} the headline despite a {{conf}}% read — published because something has to lead the bucket, not because the model leans hard.',
+    fill: (c) => ({ call: c.callTeam, conf: c.callConf }) },
+  { id: 'x-low-2', category: 'prob', magnitude: 'hedged', weight: 0.9,
+    fires: (c) => c.callConf < 38 && !c.callIsDraw,
+    template: 'Below the model\'s confidence threshold — read this as "match is open" rather than "this side is favoured".',
+    fill: () => ({}) },
+  { id: 'x-low-3', category: 'prob', magnitude: 'hedged', weight: 0.8,
+    fires: (c) => c.callConf < 38 && !c.callIsDraw,
+    template: '{{conf}}% calls win at roughly that rate historically — don\'t expect more than the number says.',
+    fill: (c) => ({ conf: c.callConf }) },
+  { id: 'x-low-4', category: 'prob', magnitude: 'hedged', weight: 0.8,
+    fires: (c) => c.callConf < 38 && !c.callIsDraw,
+    template: 'Smallest published-pick tier — {{call}} surfaces because the alternatives are smaller still.',
+    fill: (c) => ({ call: c.callTeam }) },
+  { id: 'x-low-5', category: 'prob', magnitude: 'hedged', weight: 0.7,
+    fires: (c) => c.callConf < 36 && !c.callIsDraw,
+    template: 'Three-way distribution where {{call}} {{conf}}% is the leader — match is genuinely up for grabs.',
+    fill: (c) => ({ call: c.callTeam, conf: c.callConf }) },
+
+  // ── Value (strong, ≥5pp) ─────────────────────────────────────────────
+  { id: 'x-val-strong-1', category: 'market', magnitude: 'mid', weight: 1.5,
+    fires: (c) => c.valueCall && c.edge >= 5 && c.fairOdds && c.marketOdds,
+    template: 'Closing line at {{book}}, fair at {{fair}} — {{edge}}pp gap survives every variance test we run.',
+    fill: (c) => ({ fair: c.fairOdds.toFixed(2), book: c.marketOdds.toFixed(2), edge: `+${c.edge.toFixed(1)}` }) },
+  { id: 'x-val-strong-2', category: 'market', magnitude: 'mid', weight: 1.5,
+    fires: (c) => c.valueCall && c.edge >= 5 && c.fairOdds && c.marketOdds,
+    template: 'Sharpest disagreement on the slate — {{edge}}pp between our number and the book on {{call}}.',
+    fill: (c) => ({ call: c.callTeam, edge: `+${c.edge.toFixed(1)}` }) },
+  { id: 'x-val-strong-3', category: 'market', magnitude: 'mid', weight: 1.4,
+    fires: (c) => c.valueCall && c.edge >= 5,
+    template: '{{edge}}pp of edge — past the threshold where bias and noise stop being the easy explanation.',
+    fill: (c) => ({ edge: `+${c.edge.toFixed(1)}` }) },
+  { id: 'x-val-strong-4', category: 'market', magnitude: 'mid', weight: 1.3,
+    fires: (c) => c.valueCall && c.edge >= 6 && c.fairOdds && c.marketOdds,
+    template: 'Book {{book}}, model fair {{fair}} — {{edge}}pp on {{call}} is the largest mispricing on today\'s board.',
+    fill: (c) => ({ call: c.callTeam, fair: c.fairOdds.toFixed(2), book: c.marketOdds.toFixed(2), edge: `+${c.edge.toFixed(1)}` }) },
+  { id: 'x-val-strong-5', category: 'market', magnitude: 'mid', weight: 1.3,
+    fires: (c) => c.valueCall && c.edge >= 5,
+    template: 'Edge sits at {{edge}}pp — past where calibration error explains it, past where line movement absorbs it.',
+    fill: (c) => ({ edge: `+${c.edge.toFixed(1)}` }) },
+  { id: 'x-val-strong-6', category: 'market', magnitude: 'mid', weight: 1.2,
+    fires: (c) => c.valueCall && c.edge >= 5,
+    template: 'Market discounts {{call}} by {{edge}}pp — the kind of gap that compounds across a season.',
+    fill: (c) => ({ call: c.callTeam, edge: `+${c.edge.toFixed(1)}` }) },
+  { id: 'x-val-strong-7', category: 'market', magnitude: 'mid', weight: 1.2,
+    fires: (c) => c.valueCall && c.edge >= 5 && c.fairOdds && c.marketOdds,
+    template: 'When fair ({{fair}}) and book ({{book}}) diverge by {{edge}}pp, one side is wrong — model says it\'s the book.',
+    fill: (c) => ({ fair: c.fairOdds.toFixed(2), book: c.marketOdds.toFixed(2), edge: `+${c.edge.toFixed(1)}` }) },
+
+  // ── Value (medium, 3–5pp) ────────────────────────────────────────────
+  { id: 'x-val-mid-1', category: 'market', magnitude: 'mid', weight: 1.0,
+    fires: (c) => c.valueCall && c.edge >= 3 && c.edge < 5,
+    template: '{{edge}}pp edge — past noise, short of certainty. Bread-and-butter spot.',
+    fill: (c) => ({ edge: `+${c.edge.toFixed(1)}` }) },
+  { id: 'x-val-mid-2', category: 'market', magnitude: 'mid', weight: 1.0,
+    fires: (c) => c.valueCall && c.edge >= 3 && c.edge < 5,
+    template: 'Reasonable edge on {{call}}: {{edge}}pp. Model has been right at this band ~54% of the time historically.',
+    fill: (c) => ({ call: c.callTeam, edge: `+${c.edge.toFixed(1)}` }) },
+  { id: 'x-val-mid-3', category: 'market', magnitude: 'mid', weight: 0.9,
+    fires: (c) => c.valueCall && c.edge >= 3 && c.edge < 5 && c.fairOdds && c.marketOdds,
+    template: 'Book {{book}}, fair {{fair}} — small but ungrudging edge of {{edge}}pp.',
+    fill: (c) => ({ fair: c.fairOdds.toFixed(2), book: c.marketOdds.toFixed(2), edge: `+${c.edge.toFixed(1)}` }) },
+  { id: 'x-val-mid-4', category: 'market', magnitude: 'mid', weight: 0.9,
+    fires: (c) => c.valueCall && c.edge >= 3 && c.edge < 5,
+    template: '{{edge}}pp isn\'t the loudest call we make this week — it\'s also where steady model profit lives.',
+    fill: (c) => ({ edge: `+${c.edge.toFixed(1)}` }) },
+
+  // ── Value (slim, 1–3pp) ──────────────────────────────────────────────
+  { id: 'x-val-slim-1', category: 'market', magnitude: 'hedged', weight: 0.8,
+    fires: (c) => c.valueCall && c.edge >= 1 && c.edge < 3,
+    template: 'Slim edge of {{edge}}pp — within noise on any one match, real over a season.',
+    fill: (c) => ({ edge: `+${c.edge.toFixed(1)}` }) },
+  { id: 'x-val-slim-2', category: 'market', magnitude: 'hedged', weight: 0.7,
+    fires: (c) => c.valueCall && c.edge >= 1 && c.edge < 3,
+    template: 'Marginal value on {{call}} — calibration error and edge are the same order of magnitude.',
+    fill: (c) => ({ call: c.callTeam }) },
+  { id: 'x-val-slim-3', category: 'market', magnitude: 'hedged', weight: 0.7,
+    fires: (c) => c.valueCall && c.edge >= 1 && c.edge < 3,
+    template: 'Tiny lean against the book ({{edge}}pp) — flagged for transparency, not for pressing.',
+    fill: (c) => ({ edge: `+${c.edge.toFixed(1)}` }) },
+
+  // ── Market agreement ─────────────────────────────────────────────────
+  { id: 'x-agree-1', category: 'market', magnitude: 'any', weight: 0.7,
+    fires: (c) => !c.valueCall && c.edge != null && Math.abs(c.edge) < 1,
+    template: 'Closing line and our number land in the same neighbourhood — market priced this one cleanly.',
+    fill: () => ({}) },
+  { id: 'x-agree-2', category: 'market', magnitude: 'any', weight: 0.7,
+    fires: (c) => !c.valueCall && c.edge != null && Math.abs(c.edge) < 1 && c.fairOdds && c.marketOdds,
+    template: 'Fair {{fair}} ≈ book {{book}} — nothing to fade, just a published opinion.',
+    fill: (c) => ({ fair: c.fairOdds.toFixed(2), book: c.marketOdds.toFixed(2) }) },
+  { id: 'x-agree-3', category: 'market', magnitude: 'any', weight: 0.6,
+    fires: (c) => !c.valueCall && c.edge != null && Math.abs(c.edge) < 1,
+    template: 'Book is sharp on this match — agreeing out loud is more honest than inventing disagreement.',
+    fill: () => ({}) },
+  { id: 'x-agree-4', category: 'market', magnitude: 'any', weight: 0.6,
+    fires: (c) => !c.valueCall && c.edge != null && Math.abs(c.edge) < 1.5,
+    template: 'Within a percentage point of the market — call is information, not a bet.',
+    fill: () => ({}) },
+
+  // ── Form (extra variants) ────────────────────────────────────────────
+  { id: 'x-form-1', category: 'form', magnitude: 'mid', weight: 1.0,
+    fires: (c) => { const p = formPoints(c.callForm); return p && p.pts >= 11 },
+    template: '{{call}} carrying {{pts}} from their last 5 — top of the league\'s recent-form ladder.',
+    fill: (c) => { const p = formPoints(c.callForm); return { call: c.callTeam, pts: `${p.pts}/${p.max}` } } },
+  { id: 'x-form-2', category: 'form', magnitude: 'mid', weight: 0.9,
+    fires: (c) => { const p = formPoints(c.callForm); return p && p.pts >= 9 },
+    template: 'Five-match run of {{pts}} points has {{call}} arriving in the model\'s top form bucket.',
+    fill: (c) => { const p = formPoints(c.callForm); return { call: c.callTeam, pts: p.pts } } },
+  { id: 'x-form-3', category: 'form', magnitude: 'hedged', weight: 0.9,
+    fires: (c) => { const p = formPoints(c.oppForm); return p && p.pts <= 4 },
+    template: 'Opposition arriving on {{pts}} from their last 5 — the model treats that as a sustained slip, not a one-off.',
+    fill: (c) => { const p = formPoints(c.oppForm); return { pts: p.pts } } },
+  { id: 'x-form-4', category: 'form', magnitude: 'mid', weight: 0.8,
+    fires: (c) => c.callForm && c.callForm.points_per_game_5 != null && c.callForm.points_per_game_5 >= 2.0,
+    template: '{{call}} averaging 2+ points per game in the recent window — the kind of run favourites are built on.',
+    fill: (c) => ({ call: c.callTeam }) },
+  { id: 'x-form-5', category: 'form', magnitude: 'hedged', weight: 0.8,
+    fires: (c) => c.oppForm && c.oppForm.points_per_game_5 != null && c.oppForm.points_per_game_5 < 1.0,
+    template: 'Opponent under a point per match recently — defensive shape and confidence both look thin.',
+    fill: () => ({}) },
+  { id: 'x-form-6', category: 'form', magnitude: 'mid', weight: 0.8,
+    fires: (c) => c.callForm && c.callForm.goals_scored_avg_5 != null && c.callForm.goals_scored_avg_5 >= 2.0,
+    template: '{{call}} averaging 2+ goals per match across the recent window — the attacking model is humming.',
+    fill: (c) => ({ call: c.callTeam }) },
+  { id: 'x-form-7', category: 'form', magnitude: 'hedged', weight: 0.7,
+    fires: (c) => c.callForm && c.oppForm && (c.callForm.points_per_game_5 ?? 0) - (c.oppForm.points_per_game_5 ?? 0) >= 1.0,
+    template: 'Form gap of a full point per game between the sides — small in any one match, decisive across a season.',
+    fill: () => ({}) },
+  { id: 'x-form-8', category: 'form', magnitude: 'hedged', weight: 0.7,
+    fires: (c) => c.callForm && c.oppForm && Math.abs((c.callForm.points_per_game_5 ?? 0) - (c.oppForm.points_per_game_5 ?? 0)) < 0.4,
+    template: 'Form readings cluster — neither side carries a meaningful momentum advantage into kickoff.',
+    fill: () => ({}) },
+
+  // ── H2H ──────────────────────────────────────────────────────────────
+  { id: 'x-h2h-1', category: 'h2h', magnitude: 'mid', weight: 0.9,
+    fires: (c) => { const s = h2hSummary(c.h2h); return s && s.total >= 4 && (s.h >= s.total * 0.6 || s.a >= s.total * 0.6) },
+    template: 'Head-to-head record skews hard one way — last {{n}} meetings have a clear pattern, not a coin flip.',
+    fill: (c) => ({ n: c.h2h.length }) },
+  { id: 'x-h2h-2', category: 'h2h', magnitude: 'hedged', weight: 0.7,
+    fires: (c) => { const s = h2hSummary(c.h2h); return s && s.total >= 3 && s.d >= s.total * 0.5 },
+    template: 'Half of recent head-to-heads ended level — historic pattern keeps the draw bucket warm.',
+    fill: () => ({}) },
+  { id: 'x-h2h-3', category: 'h2h', magnitude: 'mid', weight: 0.8,
+    fires: (c) => { const s = h2hSummary(c.h2h); return s && s.total >= 4 && s.avgGoals >= 3.0 },
+    template: 'Recent meetings averaging over 3 goals — totals lean over, decisive results follow.',
+    fill: () => ({}) },
+  { id: 'x-h2h-4', category: 'h2h', magnitude: 'hedged', weight: 0.7,
+    fires: (c) => { const s = h2hSummary(c.h2h); return s && s.total >= 4 && s.avgGoals < 2.0 },
+    template: 'Head-to-heads have stayed low-scoring — this fixture compresses both attacking lines.',
+    fill: () => ({}) },
+
+  // ── Schedule / fatigue / context ─────────────────────────────────────
+  { id: 'x-sched-1', category: 'schedule', magnitude: 'any', weight: 0.6,
+    fires: (c) => c.leagueCode === 'ucl' && c.callIsAway,
+    template: 'European travel adds noise to away calls — model widens the variance band on this one.',
+    fill: () => ({}) },
+  { id: 'x-sched-2', category: 'schedule', magnitude: 'any', weight: 0.6,
+    fires: (c) => c.stage && /final|semi/i.test(c.stage),
+    template: 'Late-tournament fixtures see lower goal totals than league play — fatigue and stakes both compress the game.',
+    fill: () => ({}) },
+  { id: 'x-sched-3', category: 'schedule', magnitude: 'any', weight: 0.5,
+    fires: () => true,
+    template: 'Match calendar position factors in — games stacked late in a competition window play differently.',
+    fill: () => ({}) },
+  { id: 'x-sched-4', category: 'schedule', magnitude: 'any', weight: 0.5,
+    fires: () => true,
+    template: 'Travel, recovery, and squad rotation all sit upstream of the published number — they\'re priced in, not added later.',
+    fill: () => ({}) },
+
+  // ── Venue ────────────────────────────────────────────────────────────
+  { id: 'x-venue-1', category: 'venue', magnitude: 'mid', weight: 0.8,
+    fires: (c) => c.callIsHome && c.callConf >= 50,
+    template: '{{call}} at home with the venue prior compounding form — the standard ~3pp home lift sits underneath this number.',
+    fill: (c) => ({ call: c.callTeam }) },
+  { id: 'x-venue-2', category: 'venue', magnitude: 'mid', weight: 0.8,
+    fires: (c) => c.callIsAway && c.callConf >= 45,
+    template: '{{call}} on the road overcoming the standard home prior — model says the form gap pays for the venue tax.',
+    fill: (c) => ({ call: c.callTeam }) },
+  { id: 'x-venue-3', category: 'venue', magnitude: 'hedged', weight: 0.6,
+    fires: (c) => c.callIsAway && c.callConf < 45,
+    template: 'Road call without dominance — venue prior bites, the published lean is honest about that.',
+    fill: () => ({}) },
+
+  // ── Narrative / framing (any-magnitude observations) ─────────────────
+  { id: 'x-narr-1', category: 'narrative', magnitude: 'any', weight: 0.5, fires: () => true,
+    template: 'Probabilities are the model\'s honest output — not a forecast of one outcome, a description of how often each one would land.',
+    fill: () => ({}) },
+  { id: 'x-narr-2', category: 'narrative', magnitude: 'any', weight: 0.5, fires: () => true,
+    template: 'A 60% pick still loses 40% of the time — the number is the truth, the headline simplifies it.',
+    fill: () => ({}) },
+  { id: 'x-narr-3', category: 'narrative', magnitude: 'any', weight: 0.5, fires: () => true,
+    template: 'Single-match variance dominates any one prediction — the model\'s edge shows up over slates, not single fixtures.',
+    fill: () => ({}) },
+  { id: 'x-narr-4', category: 'narrative', magnitude: 'any', weight: 0.4, fires: () => true,
+    template: 'The model isn\'t guessing — it\'s reporting where the priors land. Whether that prior holds is a separate question.',
+    fill: () => ({}) },
+  { id: 'x-narr-5', category: 'narrative', magnitude: 'any', weight: 0.4, fires: () => true,
+    template: 'Ensembles disagree more than they agree — published numbers are the consensus where they don\'t.',
+    fill: () => ({}) },
+  { id: 'x-narr-6', category: 'narrative', magnitude: 'any', weight: 0.4, fires: () => true,
+    template: 'Calibration is the goal — being right about the probability matters more than being right about the result.',
+    fill: () => ({}) },
+  { id: 'x-narr-7', category: 'narrative', magnitude: 'any', weight: 0.4, fires: () => true,
+    template: 'No model "knows" — the edge is in not pretending otherwise.',
+    fill: () => ({}) },
+
+  // ── League colour (extra variants beyond existing) ───────────────────
+  { id: 'x-lg-epl-1', category: 'league', magnitude: 'any', weight: 0.6, fires: (c) => c.leagueCode === 'epl',
+    template: 'EPL has the smallest favourite-win-rate gap of any league we cover — top sides drop more than people remember.',
+    fill: () => ({}) },
+  { id: 'x-lg-epl-2', category: 'league', magnitude: 'any', weight: 0.6, fires: (c) => c.leagueCode === 'epl',
+    template: 'Premier League refereeing produces marginally more red cards per match than other top leagues — variance band widens.',
+    fill: () => ({}) },
+  { id: 'x-lg-laliga-1', category: 'league', magnitude: 'any', weight: 0.6, fires: (c) => c.leagueCode === 'laliga',
+    template: 'La Liga away wins are slightly more common than the model used to assume — recent recalibration tilted home prior down.',
+    fill: () => ({}) },
+  { id: 'x-lg-laliga-2', category: 'league', magnitude: 'any', weight: 0.5, fires: (c) => c.leagueCode === 'laliga',
+    template: 'Spanish top flight: low-block tactics keep totals modest — over/under priors move under the league baseline.',
+    fill: () => ({}) },
+  { id: 'x-lg-seriea-1', category: 'league', magnitude: 'any', weight: 0.6, fires: (c) => c.leagueCode === 'seriea',
+    template: 'Serie A: defensive coaching is the cultural baseline — favourites win at lower rates than the line implies.',
+    fill: () => ({}) },
+  { id: 'x-lg-seriea-2', category: 'league', magnitude: 'any', weight: 0.5, fires: (c) => c.leagueCode === 'seriea',
+    template: 'Italian top flight produces the league with the lowest match-total variance — both extremes are rare.',
+    fill: () => ({}) },
+  { id: 'x-lg-bun-1', category: 'league', magnitude: 'any', weight: 0.6, fires: (c) => c.leagueCode === 'bundesliga',
+    template: 'Bundesliga has the highest goal-rate of our covered leagues — model variance is wider in both directions.',
+    fill: () => ({}) },
+  { id: 'x-lg-bun-2', category: 'league', magnitude: 'any', weight: 0.5, fires: (c) => c.leagueCode === 'bundesliga',
+    template: 'German top flight: high-press dominant style produces transitions and goals — coin-flip territory more often than people read.',
+    fill: () => ({}) },
+  { id: 'x-lg-l1-1', category: 'league', magnitude: 'any', weight: 0.5, fires: (c) => c.leagueCode === 'ligue1',
+    template: 'Ligue 1 has the largest top-3-vs-rest gap — favourite priors in this league tilt sharper than peers.',
+    fill: () => ({}) },
+  { id: 'x-lg-mls-1', category: 'league', magnitude: 'any', weight: 0.5, fires: (c) => c.leagueCode === 'mls',
+    template: 'MLS travel is the longest in our pool — away-side variance widens accordingly.',
+    fill: () => ({}) },
+  { id: 'x-lg-champ-1', category: 'league', magnitude: 'any', weight: 0.5, fires: (c) => c.leagueCode === 'championship',
+    template: 'Championship is the most parity-driven league we cover — favourite cash rates run several points lower than top tiers.',
+    fill: () => ({}) },
+  { id: 'x-lg-l2-1', category: 'league', magnitude: 'any', weight: 0.5, fires: (c) => c.leagueCode === 'league_two',
+    template: 'EFL League Two: tight margins, big variance — published probabilities in this league should be read with patience.',
+    fill: () => ({}) },
+
+  // ── Confidence / framing ─────────────────────────────────────────────
+  { id: 'x-conf-1', category: 'confidence', magnitude: 'hedged', weight: 0.6,
+    fires: (c) => c.callConf < 45,
+    template: 'Below 45% confidence is the model\'s "report what\'s there" tier — bullet text reflects the lean, not a bet.',
+    fill: () => ({}) },
+  { id: 'x-conf-2', category: 'confidence', magnitude: 'mid', weight: 0.6,
+    fires: (c) => c.callConf >= 45 && c.callConf < 58,
+    template: 'Mid-confidence band: published with conviction, but the "we could be wrong" frame stays on the page.',
+    fill: () => ({}) },
+  { id: 'x-conf-3', category: 'confidence', magnitude: 'loud', weight: 0.6,
+    fires: (c) => c.callConf >= 58,
+    template: 'Top-confidence tier — the model isn\'t doing this often, treat it as a signal worth flagging.',
+    fill: () => ({}) },
+
+  // ── Goals / totals ───────────────────────────────────────────────────
+  { id: 'x-goals-1', category: 'goals', magnitude: 'any', weight: 0.5,
+    fires: (c) => c.homeForm && c.awayForm && (c.homeForm.goals_scored_avg_5 ?? 0) + (c.awayForm.goals_scored_avg_5 ?? 0) >= 3.5,
+    template: 'Combined recent attack rate runs hot — totals priors lean over, draws stay tight.',
+    fill: () => ({}) },
+  { id: 'x-goals-2', category: 'goals', magnitude: 'any', weight: 0.5,
+    fires: (c) => c.homeForm && c.awayForm && (c.homeForm.goals_scored_avg_5 ?? 0) + (c.awayForm.goals_scored_avg_5 ?? 0) <= 2.0,
+    template: 'Both sides under a goal a match recently — decisive results come from defensive errors, not attacking volume.',
+    fill: () => ({}) },
+  { id: 'x-goals-3', category: 'goals', magnitude: 'any', weight: 0.4,
+    fires: () => true,
+    template: 'Totals priors and outcome priors trade off — a high-totals match has flatter outcome distribution by construction.',
+    fill: () => ({}) },]
 
 // ──────────────────────────────────────────────────────────────────────
 // Selector
@@ -1112,11 +1491,47 @@ function jitter(id, seed) {
   return v * 0.8 - 0.4
 }
 
+// Magnitude gating: templates can declare `magnitude: 'loud' | 'mid' | 'hedged' | 'any'`.
+// A template's magnitude must be at most the context's magnitude — i.e. loud language
+// only fires on loud probabilities. This stops "huge favourite" templates appearing
+// on 36% calls. Templates without an explicit magnitude default to 'any' and pass
+// the gate unchanged (preserves backward-compat for older entries).
+const MAG_RANK = { hedged: 1, mid: 2, loud: 3, any: 0 }
+
+function ctxMagnitude(ctx) {
+  let strength = 1
+  if (ctx.callConf >= 42) strength = 2
+  if (ctx.callConf >= 55 || ctx.spread >= 20 || (ctx.edge != null && ctx.edge >= 6)) strength = 3
+  return strength
+}
+
+function magnitudeOk(ctx, mag) {
+  if (mag == null || mag === 'any' || mag === 'hedged') return true
+  return ctxMagnitude(ctx) >= MAG_RANK[mag]
+}
+
+/**
+ * Pick N reason bullets for a match.
+ *
+ * @param {object} match
+ * @param {number} n         How many bullets to return.
+ * @param {object} opts
+ * @param {Set<string>} opts.excludeIds  Template ids already used elsewhere in
+ *   this render — typically threaded across the value deck or the daily slate
+ *   so consecutive cards don't duplicate phrasing. The set is mutated in-place
+ *   with the ids this call ends up using.
+ * @param {string|number} opts.seed      Override the daily-rotation seed (testing).
+ * @param {boolean} opts.returnTemplates If true, return the picked template
+ *   objects instead of formatted strings (used internally by pickForBatch).
+ */
 export function pickFor(match, n = 4, opts = {}) {
   const ctx = buildContext(match)
   if (!ctx) return []
+  const exclude = opts.excludeIds instanceof Set ? opts.excludeIds : null
   const eligible = TEMPLATES.filter((t) => {
     try {
+      if (exclude && exclude.has(t.id)) return false
+      if (!magnitudeOk(ctx, t.magnitude)) return false
       return t.fires(ctx)
     } catch {
       return false
@@ -1124,14 +1539,13 @@ export function pickFor(match, n = 4, opts = {}) {
   })
   if (eligible.length === 0) return []
 
-  // Daily rotation: the seed only changes once a day, so a single match
-  // shows the same bullets across every page-load on the same date but a
-  // distinctly shuffled set tomorrow. That's the cadence the editorial
-  // voice expects — fresh on each visit *over time* without flickering
-  // mid-session. Combined with the ~150-template eligible pool below, the
-  // no-repeat window for any given match is well over a month.
+  // Daily rotation seed expanded into a 14-day cycle so the same match can
+  // show distinctly different wording across two consecutive weeks before
+  // any repetition is even possible.
   const today = new Date()
-  const dayKey = `${today.getUTCFullYear()}-${today.getUTCMonth()}-${today.getUTCDate()}`
+  const dayOrdinal = Math.floor(today.getTime() / 86400000)
+  const fortnight = dayOrdinal % 14
+  const dayKey = `${today.getUTCFullYear()}-${today.getUTCMonth()}-${today.getUTCDate()}-${fortnight}`
   const seed = opts.seed != null ? String(opts.seed) : dayKey
   const matchSeed = `${match?.id || 'x'}:${seed}`
   const ranked = [...eligible].sort((a, b) => {
@@ -1149,13 +1563,16 @@ export function pickFor(match, n = 4, opts = {}) {
     out.push(t)
     usedCats.add(t.category)
   }
-  // Backfill from remaining ranked templates.
   for (const t of ranked) {
     if (out.length >= n) break
     if (out.includes(t)) continue
     out.push(t)
   }
 
+  // Mutate the caller's exclude set so the next card avoids these.
+  if (exclude) for (const t of out) exclude.add(t.id)
+
+  if (opts.returnTemplates) return out
   return out.map((t) => {
     let vars = {}
     try {
@@ -1165,6 +1582,16 @@ export function pickFor(match, n = 4, opts = {}) {
     }
     return fillTemplate(t.template, vars)
   })
+}
+
+/**
+ * Convenience wrapper for callers rendering a list of cards (value deck,
+ * slate). Threads an excludeIds set across the matches so consecutive cards
+ * don't pick the same templates. Returns one array of N strings per match.
+ */
+export function pickForBatch(matches, nPer = 1) {
+  const used = new Set()
+  return matches.map((m) => pickFor(m, nPer, { excludeIds: used }))
 }
 
 // ──────────────────────────────────────────────────────────────────────
@@ -1203,4 +1630,4 @@ export function emptyState(kind) {
 
 // Templates exported for diagnostics / future server-side mirror.
 export { TEMPLATES }
-export default { pickFor, emptyState, TEMPLATES }
+export default { pickFor, pickForBatch, emptyState, TEMPLATES }

@@ -24,16 +24,21 @@ export const TEAMS = {
   MAR: { name: 'Marseille', short: 'MAR', color: '#2FAEE0', league: 'Ligue 1', country: 'FR' },
 }
 
+// England's flag emoji is the GB-ENG subdivision tag sequence; the tag
+// bytes are hidden but required for browsers to render St George's Cross.
+const ENG = '🏴\u{E0067}\u{E0062}\u{E0065}\u{E006E}\u{E0067}\u{E007F}'
+
 export const FLAGS = {
-  EN: '🏴', ES: '🇪🇸', IT: '🇮🇹', DE: '🇩🇪', FR: '🇫🇷', US: '🇺🇸',
+  EN: ENG, ES: '🇪🇸', IT: '🇮🇹', DE: '🇩🇪', FR: '🇫🇷', US: '🇺🇸',
   BR: '🇧🇷', AR: '🇦🇷', PT: '🇵🇹', NL: '🇳🇱', BE: '🇧🇪', HR: '🇭🇷',
   JP: '🇯🇵', KR: '🇰🇷', AU: '🇦🇺', MA: '🇲🇦', SN: '🇸🇳', MX: '🇲🇽', CA: '🇨🇦',
 }
 
 export const LEAGUE_FLAG = {
-  EPL: '🏴', 'La Liga': '🇪🇸', 'Serie A': '🇮🇹', Bundesliga: '🇩🇪',
+  EPL: ENG, 'La Liga': '🇪🇸', 'Serie A': '🇮🇹', Bundesliga: '🇩🇪',
   'Ligue 1': '🇫🇷', UCL: '⭐', WC26: '🏆', Eredivisie: '🇳🇱',
   'Liga MX': '🇲🇽', MLS: '🇺🇸',
+  Championship: ENG, 'League One': ENG, 'League Two': ENG, 'National League': ENG,
 }
 
 export const toOdds = (p) => +(1 / p).toFixed(2)
@@ -163,7 +168,7 @@ export const lastWeek = rolling.slice(-8).map((r, i) => ({
 }))
 
 export const perLeague = [
-  { name: 'EPL', flag: '🏴', acc: 71.4, picks: 142, brier: 0.176, delta: +2.1, sample: 'win+win+loss+win+win' },
+  { name: 'EPL', flag: ENG, acc: 71.4, picks: 142, brier: 0.176, delta: +2.1, sample: 'win+win+loss+win+win' },
   { name: 'La Liga', flag: '🇪🇸', acc: 66.7, picks: 134, brier: 0.193, delta: -0.4, sample: 'win+loss+win+win+draw' },
   { name: 'Serie A', flag: '🇮🇹', acc: 69.0, picks: 128, brier: 0.181, delta: +1.0, sample: 'win+win+win+loss+win' },
   { name: 'Bundesliga', flag: '🇩🇪', acc: 62.8, picks: 118, brier: 0.205, delta: -2.3, sample: 'win+loss+loss+win+draw' },

@@ -985,19 +985,44 @@ function Section4Value({ picks, loading }) {
       </section>
     )
   }
+  // Pre-compute the WHY line for each card with a shared excludeIds Set so
+  // consecutive cards can't repeat the same template — fixes the issue
+  // where two/three value picks would all show the same "Tempo is the
+  // silent variable…" or "Sub-40% call…" wording.
+  const reasonTexts = useMemo(() => {
+    const used = new Set()
+    return picks.map((v) => {
+      const bullets = pickFor(
+        {
+          id: v.id,
+          home: v.match.split(' v ')[0],
+          away: v.match.split(' v ')[1],
+          callTeam: v.pick,
+          fairOdds: v.fairOdds,
+          marketOdds: v.marketOdds,
+        },
+        1,
+        { excludeIds: used },
+      )
+      return bullets[0] || `The model has ${v.pick} at ${v.conf}% — the book is mispriced.`
+    })
+  }, [picks])
+
   return (
     <section style={{ maxWidth: 980, margin: '0 auto', padding: '48px 40px 60px' }}>
       {picks.map((v, i) => (
-        <ValueAccord key={v.id} v={v} idx={i} expanded={i === 0} />
+        <ValueAccord key={v.id} v={v} idx={i} expanded={i === 0} reasonText={reasonTexts[i]} />
       ))}
     </section>
   )
 }
 
-function ValueAccord({ v, idx, expanded }) {
+function ValueAccord({ v, idx, expanded, reasonText: reasonTextProp }) {
   const [open, setOpen] = useState(expanded)
+  // Prefer the parent-supplied (cross-card-dedup-aware) reason; fall back to
+  // a local pickFor if a caller forgets to thread it.
   const reasonText = useMemo(() => {
-    // Use the reasoning library to fill the accordion's "why" line.
+    if (reasonTextProp) return reasonTextProp
     const bullets = pickFor(
       {
         id: v.id,
@@ -1010,7 +1035,7 @@ function ValueAccord({ v, idx, expanded }) {
       1
     )
     return bullets[0] || `The model has ${v.pick} at ${v.conf}% — the book is mispriced.`
-  }, [v])
+  }, [v, reasonTextProp])
 
   return (
     <div

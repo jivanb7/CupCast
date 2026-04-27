@@ -160,10 +160,16 @@ export function adaptMatches(apiMatches) {
 // Model performance
 // ──────────────────────────────────────────────────────────────────────
 
+// England flag uses the GB-ENG regional subdivision tag sequence:
+// 🏴 + the hidden tag bytes spelling 'gbeng' + cancel-tag. Without the tag
+// sequence the bare 🏴 renders as a plain black flag (or blank box on some
+// platforms) which is what was happening for all 5 English tiers.
+const FLAG_ENG = '🏴\u{E0067}\u{E0062}\u{E0065}\u{E006E}\u{E0067}\u{E007F}'
+
 const LEAGUE_FLAG_BY_CODE = {
-  epl: '🏴', laliga: '🇪🇸', seriea: '🇮🇹', bundesliga: '🇩🇪', ligue1: '🇫🇷',
+  epl: FLAG_ENG, laliga: '🇪🇸', seriea: '🇮🇹', bundesliga: '🇩🇪', ligue1: '🇫🇷',
   ucl: '⭐', eredivisie: '🇳🇱', mls: '🇺🇸', worldcup: '🏆',
-  championship: '🏴', league_one: '🏴', league_two: '🏴', national_league: '🏴',
+  championship: FLAG_ENG, league_one: FLAG_ENG, league_two: FLAG_ENG, national_league: FLAG_ENG,
 }
 
 // Convert backend's `/model/performance` into the shape the design pages
