@@ -599,27 +599,49 @@ def train_stacked_ensemble(base_specs, X_train, y_train, X_val, y_val, sample_we
     from sklearn.base import clone
     from sklearn.model_selection import TimeSeriesSplit
 
-    # Build a 3-fold OOF probability matrix per base model. Use
-    # TimeSeriesSplit (not random KFold + shuffle) so each fold's base
-    # model is fit on rows that strictly precede the evaluation rows —
-    # otherwise the meta-learner trains on leaked future-base-predictions.
+    # Build a time-aware OOF probability matrix per base model. We can't
+    # call sklearn's `cross_val_predict` here because TimeSeriesSplit's
+    # test folds don't form a partition (the first chunk is never used as
+    # a test fold — it's always in the train set), and cross_val_predict
+    # raises "only works for partitions". Instead we run the splits
+    # manually, fill only the rows that appear in a test fold, and fit
+    # the meta-learner on that subset. This still gives the meta a
+    # leakage-free signal — every OOF prediction was produced by a base
+    # model that saw STRICTLY EARLIER training rows than the row being
+    # predicted, which is exactly what TimeSeriesSplit guarantees.
+    n_train = len(X_train)
     kf = TimeSeriesSplit(n_splits=3)
+    splits = list(kf.split(X_train))
+    oof_mask = np.zeros(n_train, dtype=bool)
+    for _, test_idx in splits:
+        oof_mask[test_idx] = True
+
     oof_blocks = []
     base_models = []
     for name, factory in base_specs:
-        est = factory()
-        # cross_val_predict returns OOF predictions in the original order.
-        oof = cross_val_predict(est, X_train, y_train, cv=kf, method="predict_proba", n_jobs=1)
+        oof = np.full((n_train, 3), np.nan, dtype=float)
+        for tr_idx, te_idx in splits:
+            est = factory()
+            est.fit(X_train.iloc[tr_idx], y_train.iloc[tr_idx])
+            oof[te_idx] = est.predict_proba(X_train.iloc[te_idx])
         oof_blocks.append(oof)
+
         # Refit on full train so we can get val/test predictions later.
         est_full = factory()
         est_full.fit(X_train, y_train)
         base_models.append((name, est_full))
-        logger.info("  stack base %s OOF shape=%s", name, oof.shape)
+        logger.info(
+            "  stack base %s OOF shape=%s (covered rows=%d/%d)",
+            name, oof.shape, int(oof_mask.sum()), n_train,
+        )
 
-    train_meta = np.hstack(oof_blocks)
+    # Stack base OOFs side-by-side and drop rows that never appeared in
+    # any test fold (the first 1/(n_splits+1) chunk under TimeSeriesSplit).
+    train_meta_full = np.hstack(oof_blocks)
+    train_meta = train_meta_full[oof_mask]
+    y_train_meta = y_train.values[oof_mask] if hasattr(y_train, "values") else np.asarray(y_train)[oof_mask]
     meta = LogisticRegression(max_iter=2000, solver="lbfgs", C=1.0, random_state=42)
-    meta.fit(train_meta, y_train)
+    meta.fit(train_meta, y_train_meta)
 
     # Build val predictions: each base predicts on val, concat, meta predicts.
     val_blocks = [m.predict_proba(X_val) for _, m in base_models]
