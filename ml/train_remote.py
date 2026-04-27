@@ -1018,8 +1018,19 @@ def run_training(model_type="club", n_trials=10):
     logger.info("BEST MODEL: %s (accuracy=%.4f, log_loss=%.4f, f1=%.4f)",
                 best_name, best["accuracy"], best["log_loss"], best["f1_macro"])
 
-    # Register best model
+    # Register best model. Also log the canonical val_* metrics on the
+    # best run so the promotion gate can read them. Some training functions
+    # only log Optuna-internal metrics under different names; explicit logging
+    # here guarantees the gate has val_accuracy / val_log_loss to compare.
     with mlflow.start_run(run_id=best["run_id"]):
+        try:
+            mlflow.log_metric("val_accuracy", float(best["accuracy"]))
+            mlflow.log_metric("val_log_loss", float(best["log_loss"]))
+            mlflow.log_metric("val_f1_macro", float(best["f1_macro"]))
+            mlflow.log_metric("val_brier_score", float(best.get("brier_score", 0.0)))
+        except Exception:
+            logger.exception("Failed to log val_* metrics on best run (gate may struggle to compare)")
+
         try:
             if isinstance(best["model"], xgb.XGBClassifier):
                 mlflow.xgboost.log_model(best["model"], artifact_path="model")

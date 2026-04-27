@@ -61,13 +61,30 @@ def _resolve_database_url() -> str:
 
 def _refresh_from_api_football(session) -> dict:
     """Hit API-Football for fresh top-scorers + injuries across all leagues
-    we cover. The service handles rate-limiting and key rotation."""
-    if not os.environ.get("API_FOOTBALL_KEYS"):
+    we cover. The service handles rate-limiting and key rotation, but the
+    rotator must be initialized first with the keys env var. The backend
+    web process does this on startup; this script doesn't get that lifecycle
+    so we call init_rotator() ourselves here."""
+    keys_env = os.environ.get("API_FOOTBALL_KEYS", "")
+    if not keys_env:
         logger.warning(
             "API_FOOTBALL_KEYS env var not set — skipping refresh. "
             "The DB's existing injury/top-scorer rows will be used as-is."
         )
         return {}
+
+    # Initialize the rate-limiter / key rotator before calling any
+    # services.player_availability_service function. Without this every
+    # league call returns 'API key rotator not initialized'.
+    try:
+        from services.api_key_rotator import init_rotator
+        keys = [k.strip() for k in keys_env.split(",") if k.strip()]
+        init_rotator(keys)
+        logger.info("api_key_rotator initialized with %d key(s)", len(keys))
+    except Exception:
+        logger.exception("Failed to init_rotator — refresh will fall through")
+        return {}
+
     try:
         result = refresh_all_leagues(session)
         logger.info("API-Football refresh complete: %s", result)
