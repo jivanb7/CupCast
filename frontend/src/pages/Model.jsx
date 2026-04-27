@@ -277,12 +277,22 @@ function LeagueTable({ rows, fatal, loading }) {
   if (fatal) return <EmptyPanel kind="error"/>
   if (!rows || rows.length === 0) return <EmptyPanel kind="calibrating"/>
 
+  // Filter out leagues with fewer than 3 graded matches in the last 7
+  // days. Two-match buckets (EFL L2 at 0/2 was the trigger) produce
+  // accuracy numbers that swing 0 → 50 → 100 from a single result —
+  // visually loud, statistically noise. Hidden leagues still contribute
+  // to the season-level rolling accuracy at the top of the page, they
+  // just don't get their own row until the sample stabilises.
+  const MIN_N = 3
+  const stableRows = rows.filter((r) => (r.nRecent ?? 0) >= MIN_N)
+  const hiddenCount = rows.length - stableRows.length
+
   return (
     <div>
       <div style={{display:'grid', gridTemplateColumns:'2fr 1fr 1fr 1.2fr', padding:'10px 18px', borderBottom:'1px solid var(--cc-line)', fontFamily:'var(--cc-mono)', fontSize: 10, color:'var(--cc-muted)', letterSpacing:'0.1em'}}>
         <span>LEAGUE</span><span style={{textAlign:'right'}}>ACC %</span><span style={{textAlign:'right'}}>N · 7D</span><span style={{textAlign:'right'}}>Δ 7D</span>
       </div>
-      {rows.map((r, i) => {
+      {stableRows.map((r, i) => {
         const hasDelta = r.delta != null
         const positive = hasDelta && r.delta >= 0
         const deltaColor = !hasDelta
@@ -311,6 +321,11 @@ function LeagueTable({ rows, fatal, loading }) {
           </div>
         )
       })}
+      {hiddenCount > 0 && (
+        <div style={{padding:'10px 18px', fontFamily:'var(--cc-mono)', fontSize: 10, color:'var(--cc-muted)', letterSpacing:'0.06em', borderTop:'1px solid var(--cc-line)'}}>
+          {hiddenCount} {hiddenCount === 1 ? 'league' : 'leagues'} hidden · sample under {MIN_N} in the last 7 days
+        </div>
+      )}
     </div>
   )
 }

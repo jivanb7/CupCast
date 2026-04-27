@@ -45,6 +45,38 @@ const LEAGUE_LABEL_TIER = {
   'Nat Lge': 5,
 }
 
+// Top-club shortlist for marquee selection. Even within tier 1 (Big-5 +
+// UCL), most fixtures are Fulham-Bournemouth-tier mid-table affairs —
+// not what should anchor the dashboard. This list is the global "if any
+// of these are playing, lead with that match" set: club giants by
+// stature/recognition across all the leagues we cover. Match either
+// home or away against these names (case-insensitive prefix); we don't
+// rely on the canonical name because crests/short names sometimes drift.
+const TOP_CLUBS = [
+  // EPL big six + Newcastle (recent CL regular)
+  'Manchester City', 'Manchester United', 'Liverpool', 'Arsenal',
+  'Chelsea', 'Tottenham', 'Newcastle United',
+  // La Liga giants
+  'Real Madrid', 'FC Barcelona', 'Atlético de Madrid', 'Atletico de Madrid',
+  // Bundesliga giants
+  'FC Bayern München', 'Bayern München', 'Borussia Dortmund', 'Bayer 04 Leverkusen',
+  'RB Leipzig',
+  // Serie A giants
+  'Juventus FC', 'Juventus', 'FC Internazionale Milano', 'Inter Milan',
+  'AC Milan', 'SSC Napoli', 'AS Roma',
+  // Ligue 1 + other European powerhouses
+  'Paris Saint-Germain',
+  // Eredivisie / Liga Portugal headliners
+  'AFC Ajax', 'Ajax', 'PSV Eindhoven', 'Feyenoord',
+  'SL Benfica', 'FC Porto', 'Sporting CP',
+]
+
+function isTopClub(name) {
+  if (!name) return false
+  const n = String(name).toLowerCase()
+  return TOP_CLUBS.some((tc) => n.includes(tc.toLowerCase()))
+}
+
 function tierFor(m) {
   const code = (m?.leagueCode || '').toLowerCase()
   if (LEAGUE_TIER[code] != null) return LEAGUE_TIER[code]
@@ -55,9 +87,15 @@ function tierFor(m) {
 function pickMarquee(matches) {
   if (!matches || matches.length === 0) return null
   const ranked = [...matches].sort((a, b) => {
+    // 1. Top-club fixtures lead. Two top clubs > one top club > zero.
+    const taScore = (isTopClub(a.home) ? 1 : 0) + (isTopClub(a.away) ? 1 : 0)
+    const tbScore = (isTopClub(b.home) ? 1 : 0) + (isTopClub(b.away) ? 1 : 0)
+    if (taScore !== tbScore) return tbScore - taScore
+    // 2. Then league tier.
     const ta = tierFor(a)
     const tb = tierFor(b)
     if (ta !== tb) return ta - tb
+    // 3. Then valueCall → edge → confidence as before.
     if (b.valueCall !== a.valueCall) return b.valueCall ? 1 : -1
     if (b.edge !== a.edge) return b.edge - a.edge
     return b.callConf - a.callConf

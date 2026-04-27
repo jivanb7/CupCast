@@ -186,6 +186,24 @@ jobs:
             exit 1
           fi
           echo "Resolved backend URL: $backend"
+
+          # Sweep phantom UCL fixtures (Drita, Inter Club d'Escaldes, etc.)
+          # BEFORE regenerating predictions. The seed-time sweep in
+          # ucl_fixture_service only runs on backend cold-start, which
+          # doesn't fire on Cloud Run unless the container scaled to zero.
+          # Calling the admin endpoint here guarantees the slate is clean
+          # on every refresh — no manual intervention, no waiting for a
+          # cold start. Failure is non-fatal so a sweep blip can't break
+          # the more important regen call.
+          echo "Sweeping phantom UCL fixtures..."
+          curl -fsS -X POST \
+            -H "X-Admin-Key: ${{ secrets.ADMIN_API_KEY }}" \
+            -H "Content-Type: application/json" \
+            --max-time 60 \
+            "$backend/api/v1/admin/fixtures/cleanup-ucl-phantoms" \
+            || echo "::warning::phantom sweep failed; proceeding to regen anyway"
+
+          echo "Regenerating predictions..."
           curl -fsS -X POST \
             -H "X-Admin-Key: ${{ secrets.ADMIN_API_KEY }}" \
             -H "Content-Type: application/json" \
