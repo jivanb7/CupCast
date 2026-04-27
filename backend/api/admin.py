@@ -571,10 +571,9 @@ def cleanup_ucl_phantoms(
     from models.prediction import Prediction
     from models.team import Team
 
-    BLOCKLIST_NAMES = {
-        "Drita",
-        "Inter Club d'Escaldes",
-    }
+    # Source of truth lives in services/ucl_fixture_service so the parse-
+    # time filter, the seed sweep, and this admin endpoint stay aligned.
+    from services.ucl_fixture_service import UCL_PHANTOM_BLOCKLIST as BLOCKLIST_NAMES
 
     ucl = db.query(League).filter(League.code == "ucl").first()
     if not ucl:

@@ -31,6 +31,19 @@ UCL_LEAGUE_ID = 2
 # Seconds to wait between API calls (rate-limit politeness)
 REQUEST_DELAY = 0.5
 
+# Clubs that occasionally leak from the UCL qualification ladder into the
+# league-phase fixture feed. Adding a name here causes both _parse_fixture
+# to skip it on ingest AND seed_ucl_fixtures_to_db to delete any existing
+# match record that involves it. Keep this in sync with the
+# /admin/fixtures/cleanup-ucl-phantoms blocklist.
+UCL_PHANTOM_BLOCKLIST = {
+    "Drita",
+    "Inter Club d'Escaldes",
+    "Saburtalo",
+    "FC Noah",
+    "Shelbourne",
+}
+
 
 def _current_ucl_season() -> int:
     """
@@ -111,6 +124,22 @@ def _parse_fixture(raw: dict) -> Optional[dict]:
       match_date, home_team, away_team, kickoff_time,
       league_code, round, status, home_goals, away_goals, result
     Returns None if the fixture is malformed.
+
+    Filtering rules — applied here so phantom UCL fixtures never enter the
+    DB in the first place (we used to have a separate cleanup endpoint
+    that the user had to invoke after every refresh):
+
+    - Reject any fixture whose round name contains "qualifying",
+      "preliminary", or "play-off". API-Football's UCL feed (league=2)
+      includes the entire qualification ladder going back to July, and
+      those fixtures occasionally land with kickoff dates that overlap
+      the live league-phase / knockout slate. We only want league-phase
+      and knockout-stage matches — the same ones that appear on the
+      official UCL bracket.
+    - Reject any fixture where either team is on the phantom blocklist
+      (small-league clubs that only appear via the qualifying ladder and
+      have caused the "Drita vs Arsenal" / "Inter Club d'Escaldes vs
+      Real Madrid" type bugs).
     """
     try:
         from ml.src.team_name_mapping import resolve_team_name
@@ -119,6 +148,16 @@ def _parse_fixture(raw: dict) -> Optional[dict]:
         teams = raw.get("teams", {})
         goals = raw.get("goals", {})
         league = raw.get("league", {})
+
+        # Round filter — reject anything before the league phase.
+        round_name = (league.get("round") or "").lower()
+        for skip_token in ("qualifying", "preliminary", "play-off", "play off"):
+            if skip_token in round_name:
+                logger.debug(
+                    "UCL: skipping non-league-phase fixture (round=%r)",
+                    league.get("round"),
+                )
+                return None
 
         # Date / kickoff
         kickoff_iso = fixture.get("date")  # e.g. "2025-09-17T21:00:00+00:00"
@@ -141,6 +180,16 @@ def _parse_fixture(raw: dict) -> Optional[dict]:
 
         home_team = resolve_team_name(home_raw, source="api_football_ucl")
         away_team = resolve_team_name(away_raw, source="api_football_ucl")
+
+        # Phantom blocklist — small clubs that only show up via UCL
+        # qualification but occasionally leak into the league-phase feed.
+        # Mirror the cleanup endpoint's list so the two stay in sync.
+        if home_team in UCL_PHANTOM_BLOCKLIST or away_team in UCL_PHANTOM_BLOCKLIST:
+            logger.info(
+                "UCL: dropping phantom fixture %s vs %s (blocklisted club, round=%r)",
+                home_team, away_team, league.get("round"),
+            )
+            return None
 
         # Goals (None when match not yet played)
         home_goals = goals.get("home")
@@ -275,6 +324,48 @@ def seed_ucl_fixtures_to_db(db: Session) -> int:
             "run seed_database.py first to create the UCL league entry"
         )
         return 0
+
+    # Sweep any phantom matches left over from previous bad ingests before
+    # adding new rows. The parse-time filter prevents new phantoms from
+    # entering, but historical rows (e.g., the Drita vs Arsenal stub at
+    # match_id=65858 dated 2026-04-29) need to be expunged or they'll keep
+    # showing up on the dashboard. Doing this inside the seeder means the
+    # cleanup happens automatically on every refresh — no separate admin
+    # endpoint call required.
+    try:
+        from models.prediction import Prediction
+
+        bad_team_ids = [
+            t.id for t in db.query(Team).filter(
+                Team.canonical_name.in_(UCL_PHANTOM_BLOCKLIST)
+            ).all()
+        ]
+        if bad_team_ids:
+            phantoms = (
+                db.query(Match)
+                .filter(
+                    Match.league_id == ucl_league.id,
+                    (Match.home_team_id.in_(bad_team_ids))
+                    | (Match.away_team_id.in_(bad_team_ids)),
+                )
+                .all()
+            )
+            if phantoms:
+                phantom_ids = [m.id for m in phantoms]
+                db.query(Prediction).filter(
+                    Prediction.match_id.in_(phantom_ids)
+                ).delete(synchronize_session=False)
+                for m in phantoms:
+                    db.delete(m)
+                db.commit()
+                logger.warning(
+                    "UCL fixture seeding: swept %d phantom matches involving %s",
+                    len(phantoms),
+                    sorted(UCL_PHANTOM_BLOCKLIST),
+                )
+    except Exception as exc:
+        logger.warning("UCL phantom sweep skipped: %s", exc)
+        db.rollback()
 
     # Determine current season label (e.g., "2025-26")
     season_year = _current_ucl_season()
