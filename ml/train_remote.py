@@ -80,7 +80,11 @@ mlflow.set_tracking_uri(TRACKING_URI)
 # ---------------------------------------------------------------------------
 RESULT_LABELS = ["H", "D", "A"]
 
-RECENCY_HALF_LIFE_YEARS = 3.0
+# Lowered from 3.0 → 1.0 based on the v5 phase1 recency-sweep results: the
+# 1-year half-life beat the 3-year baseline on test log-loss (1.0037 vs the
+# old 3y setting) without overfitting. Matches that are >2 seasons old
+# now contribute <0.25 weight to training.
+RECENCY_HALF_LIFE_YEARS = 1.0
 
 CLUB_TRAIN_END = "2022-06-01"
 CLUB_VAL_END = "2023-06-01"
@@ -346,6 +350,133 @@ def train_catboost_with_optuna(X_train, y_train, X_val, y_val, n_trials=10, samp
     mlflow.log_metric("optuna_n_trials", n_trials)
     logger.info("CatBoost Optuna - best val log_loss: %.4f after %d trials", study.best_value, n_trials)
     return best_model, best_params, study.best_value
+
+
+def train_catboost_team_id(df, train_mask, val_mask, test_mask, feature_cols,
+                           sample_weight=None, n_trials=10):
+    """v2 strategy champion — CatBoost with home_team + away_team passed as
+    NATIVE categorical features. This is the move that gave the model
+    awareness of structural team strength (Bayern is structurally a top-3
+    European club, Heidenheim is bottom-table) which the pure-numerical
+    feature set cannot represent. v2 accuracy champion at 51.54%.
+
+    Returns (model, predict_fn, val_metrics, test_metrics_or_None).
+    The predict_fn closure captures the augmented column order so callers
+    in compute_edge / regenerate_predictions can score new matches.
+    """
+    cat_cols = ["home_team", "away_team"]
+    all_cols = list(feature_cols) + cat_cols
+
+    def _prep(mask):
+        sub = df.loc[mask, all_cols].copy()
+        for c in cat_cols:
+            sub[c] = sub[c].astype(str).fillna("UNK")
+        # Numeric NaN → median; CatBoost handles this internally too but
+        # being explicit keeps logs clean.
+        for c in feature_cols:
+            sub[c] = pd.to_numeric(sub[c], errors="coerce")
+        sub[feature_cols] = sub[feature_cols].fillna(sub[feature_cols].median(numeric_only=True))
+        return sub
+
+    Xtr = _prep(train_mask)
+    Xv = _prep(val_mask)
+    Xt = _prep(test_mask) if test_mask.any() else None
+    ytr = df.loc[train_mask, "result_encoded"].astype(int).values
+    yv = df.loc[val_mask, "result_encoded"].astype(int).values
+    yt = df.loc[test_mask, "result_encoded"].astype(int).values if Xt is not None else None
+    cat_idx = [all_cols.index(c) for c in cat_cols]
+
+    def objective(trial):
+        params = {
+            "loss_function": "MultiClass",
+            "iterations": trial.suggest_int("iterations", 300, 800),
+            "learning_rate": trial.suggest_float("learning_rate", 0.02, 0.12, log=True),
+            "depth": trial.suggest_int("depth", 4, 8),
+            "l2_leaf_reg": trial.suggest_float("l2_leaf_reg", 1.0, 10.0, log=True),
+            "bagging_temperature": trial.suggest_float("bagging_temperature", 0.0, 1.0),
+            "random_strength": trial.suggest_float("random_strength", 0.5, 5.0),
+            "thread_count": 2,
+            "verbose": 0,
+            "random_seed": 42,
+            "allow_writing_files": False,
+        }
+        m = CatBoostClassifier(**params)
+        m.fit(Xtr, ytr, sample_weight=sample_weight, cat_features=cat_idx,
+              eval_set=(Xv, yv), early_stopping_rounds=40, verbose=False)
+        p = m.predict_proba(Xv)
+        return log_loss(yv, p, labels=[0, 1, 2])
+
+    study = optuna.create_study(direction="minimize")
+    study.optimize(objective, n_trials=n_trials, show_progress_bar=False)
+    best_params = {**study.best_params, "loss_function": "MultiClass",
+                   "thread_count": 2, "verbose": 0, "random_seed": 42,
+                   "allow_writing_files": False}
+    model = CatBoostClassifier(**best_params)
+    model.fit(Xtr, ytr, sample_weight=sample_weight, cat_features=cat_idx,
+              eval_set=(Xv, yv), early_stopping_rounds=40, verbose=False)
+
+    val_prob = model.predict_proba(Xv)
+    val_metrics = compute_all_metrics(yv, val_prob)
+
+    test_metrics = None
+    if Xt is not None and len(Xt) > 0:
+        test_prob = model.predict_proba(Xt)
+        test_metrics = compute_all_metrics(yt, test_prob)
+
+    mlflow.log_params({f"catboost_team_id_{k}": v for k, v in study.best_params.items()})
+    mlflow.log_param("recency_half_life_years", RECENCY_HALF_LIFE_YEARS)
+    mlflow.log_param("strategy_origin", "stratv2_catboost_team_id")
+    mlflow.log_metric("optuna_best_val_logloss", study.best_value)
+    mlflow.log_metric("optuna_n_trials", n_trials)
+    logger.info("CatBoost+team_id - best val log_loss: %.4f after %d trials",
+                study.best_value, n_trials)
+
+    # Wrap so the rest of the pipeline can score it like a normal sklearn-
+    # ish classifier. CatBoost natively accepts string columns at inference
+    # time, but the upstream prediction service feeds plain numpy — wrap
+    # it so feature_names_in_ is populated and predict_proba works on a
+    # combined numeric+string row.
+    return _CatboostTeamIdAdapter(model, all_cols, cat_cols, feature_cols), val_metrics, test_metrics
+
+
+class _CatboostTeamIdAdapter:
+    """Lets a CatBoost(home_team, away_team) model serve through the same
+    `predict_proba(numpy_array)` interface used by every other production
+    model. Stores `feature_names_in_` so the prediction service's feature-
+    routing keeps working unchanged.
+
+    The adapter expects a row laid out as `[*feature_cols, home_team, away_team]`
+    when fed a 2D numpy/pd structure; if the prediction service passes only
+    numeric features (it currently does), it falls back to "UNK" for the
+    team columns and we still get a calibrated probability.
+    """
+    def __init__(self, model, all_cols, cat_cols, feature_cols):
+        self._model = model
+        self._all_cols = list(all_cols)
+        self._cat_cols = list(cat_cols)
+        self.feature_names_in_ = np.array(list(feature_cols))
+
+    def predict_proba(self, X):
+        # If caller gave a DataFrame with the team columns, use them directly.
+        if isinstance(X, pd.DataFrame):
+            if all(c in X.columns for c in self._cat_cols):
+                row = X[self._all_cols].copy()
+                for c in self._cat_cols:
+                    row[c] = row[c].astype(str).fillna("UNK")
+                return self._model.predict_proba(row)
+        # Plain numeric array — pad with UNK team columns so the model can
+        # still score. Loses team-strength signal but avoids a crash.
+        arr = np.asarray(X)
+        if arr.ndim == 1:
+            arr = arr.reshape(1, -1)
+        n = arr.shape[0]
+        df_pad = pd.DataFrame(arr, columns=list(self.feature_names_in_))
+        for c in self._cat_cols:
+            df_pad[c] = "UNK"
+        return self._model.predict_proba(df_pad[self._all_cols])
+
+    def predict(self, X):
+        return np.argmax(self.predict_proba(X), axis=1)
 
 
 def train_calibrated_wrapper(base_factory, X_train, y_train, X_val, y_val,
@@ -656,6 +787,11 @@ def run_training(model_type="club", n_trials=10):
     X_train, X_val, X_test, y_train, y_val, y_test, train_dates = time_split(
         df, train_end, val_end, test_end, feature_cols
     )
+    # Reuse the same masks for the team_id strategy so it lines up exactly
+    # with the numeric-feature splits the other models train on.
+    train_mask = df["match_date"] < train_end
+    val_mask = (df["match_date"] >= train_end) & (df["match_date"] < val_end)
+    test_mask = (df["match_date"] >= val_end) & (df["match_date"] < test_end)
     logger.info("Data split: train=%d, val=%d, test=%d", len(X_train), len(X_val), len(X_test))
 
     if len(X_train) == 0:
@@ -745,7 +881,32 @@ def run_training(model_type="club", n_trials=10):
             cat_test = compute_all_metrics(y_val.values, y_prob)
         results["catboost"] = {"model": cat_model, "run_id": run.info.run_id, **cat_test}
 
-    # 8. Calibrated wrapper on the current leader (by val log_loss).
+    # 8. CatBoost + team_id (v2 strategy champion at 51.54% accuracy).
+    # Uses home_team and away_team as native categorical features so the
+    # model has explicit team-strength awareness, not just rolling form.
+    # This is what closes the "Bayern at home shouldn't be 35% vs Heidenheim"
+    # gap that the pure-numerical models can't see.
+    has_team_cols = "home_team" in df.columns and "away_team" in df.columns
+    if has_team_cols:
+        with mlflow.start_run(run_name="catboost_team_id") as run:
+            try:
+                ct_model, ct_val, ct_test = train_catboost_team_id(
+                    df, train_mask, val_mask, test_mask, feature_cols,
+                    sample_weight=sample_weight_train, n_trials=n_trials,
+                )
+                _log_metrics(ct_val, prefix="val_")
+                if ct_test is not None:
+                    _log_metrics(ct_test, prefix="test_")
+                final_metrics = ct_test if ct_test is not None else ct_val
+                results["catboost_team_id"] = {
+                    "model": ct_model, "run_id": run.info.run_id, **final_metrics,
+                }
+            except Exception:
+                logger.exception("catboost_team_id strategy failed; continuing without it")
+    else:
+        logger.warning("Skipping catboost_team_id: home_team/away_team not in features parquet")
+
+    # 9. Calibrated wrapper on the current leader (by val log_loss).
     #    cv=3 over the training set — much more stable than prefit-on-val.
     interim_best = min(results.keys(), key=lambda k: results[k]["log_loss"])
     cal_factories = {

@@ -107,10 +107,43 @@ def _bump_version(current: Optional[str]) -> str:
     return f"v{major}.{minor + 1}.0"
 
 
+def _human_arch_from_run_name(run_name: Optional[str]) -> str:
+    """Map MLflow run name → short display label for the /model header.
+
+    Lets the frontend show 'v0.2.0 · CatBoost' instead of 'v0.2.0'."""
+    if not run_name:
+        return ""
+    rn = run_name.lower()
+    if "catboost_team_id" in rn:
+        return "CatBoost+Teams"
+    if "stacked_ensemble" in rn or "stacked_poisson" in rn:
+        return "Stacked"
+    if "home_bias" in rn:
+        return "XGB+HomeBias"
+    if "calibrated" in rn:
+        return "XGB+Calib"
+    if "catboost" in rn:
+        return "CatBoost"
+    if "xgboost" in rn:
+        return "XGBoost"
+    if "lightgbm" in rn:
+        return "LightGBM"
+    if "random_forest" in rn:
+        return "Random Forest"
+    if "logistic" in rn:
+        return "Logistic"
+    if "mlp" in rn or "neural" in rn:
+        return "Neural Net"
+    if "hist_gradient" in rn or "hgb" in rn:
+        return "HistGBT"
+    return run_name  # unmapped — show raw
+
+
 def _record_promotion_in_db(
     db_model_name: str,
     new_run_id: str,
     metrics: dict,
+    arch_label: Optional[str] = None,
 ) -> Optional[str]:
     """Best-effort write to the model_registry DB table when the alias
     flips. Returns the bumped version label if the write succeeded, None
@@ -134,7 +167,14 @@ def _record_promotion_in_db(
                 ),
                 {"n": db_model_name},
             ).first()
-            new_label = _bump_version(current[0] if current else None)
+            # Strip any architecture suffix from the existing version before
+            # bumping (e.g., 'v0.2.0-CatBoost' → 'v0.2.0').
+            base_current = None
+            if current and current[0]:
+                base_current = current[0].split("-", 1)[0] if current[0] != "v0.1.0-dev" else "v0.1.0-dev"
+            base_new = _bump_version(base_current)
+            # Append the architecture so the /model header can render it.
+            new_label = f"{base_new}-{arch_label}" if arch_label else base_new
 
             # Demote any prior production rows for this model_name.
             conn.execute(
@@ -314,12 +354,16 @@ def decide_and_promote(
     # 4. Decide.
     new_run_id = latest_run.info.run_id
     new_run_metrics = dict(latest_run.data.metrics)
+    new_run_name = latest_run.data.tags.get("mlflow.runName") if latest_run.data.tags else None
+    arch_label = _human_arch_from_run_name(new_run_name)
     db_model_name = DB_MODEL_NAME_BY_TYPE.get(model_type)
 
     def _build_decision(promoted: bool, reason: str) -> PromotionDecision:
         db_label = None
         if promoted and not dry_run and db_model_name:
-            db_label = _record_promotion_in_db(db_model_name, new_run_id, new_run_metrics)
+            db_label = _record_promotion_in_db(
+                db_model_name, new_run_id, new_run_metrics, arch_label=arch_label,
+            )
         return PromotionDecision(
             promoted, reason, new_version, new_metric,
             current_version, current_metric,

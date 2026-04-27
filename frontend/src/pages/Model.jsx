@@ -95,10 +95,18 @@ function headerLine(data, loading, fatal) {
   if (fatal || !data) return 'MODEL FEED UNAVAILABLE'
   const days = data.lastWeek?.length || 0
   const trained = data.lastTrained ? formatTrainedAt(data.lastTrained) : null
-  const version = data.modelVersion || 'v?'
+  const raw = data.modelVersion || 'v?'
+  // The promotion gate writes versions like "v0.2.0-CatBoost+Teams" — split
+  // on the first hyphen so the header can render version and architecture
+  // separately. Legacy "v0.1.0-dev" parses fine (arch = "dev").
+  const [versionPart, archPart] = raw.includes('-') ? raw.split(/-(.+)/) : [raw, '']
+  const versionLabel = versionPart.toUpperCase()
+  const archLabel = archPart && archPart !== 'dev' ? ` · ${archPart}` : ''
   const acc = `${data.accuracy.toFixed(1)}% ACCURACY · ${days}D WINDOW`
   const stats = `F1 ${data.f1Macro.toFixed(3)} · LOG LOSS ${data.logLoss.toFixed(3)}`
-  const tail = trained ? `${version.toUpperCase()} · TRAINED ${trained}` : `${version.toUpperCase()}`
+  const tail = trained
+    ? `${versionLabel}${archLabel} · TRAINED ${trained}`
+    : `${versionLabel}${archLabel}`
   return `${acc} · ${stats} · ${tail}`
 }
 

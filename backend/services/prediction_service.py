@@ -546,22 +546,43 @@ def generate_batch_predictions(db) -> int:
 
             # Route to appropriate model
             club_model = get_club_model(ml_league_code)
-            feature_names = list(club_model.feature_names_in_)
 
-            # Extract features the model expects
-            available = [f for f in feature_names if f in feature_row.index]
-            if len(available) < len(feature_names) * 0.8:
+            # Some models (the v2 catboost+team_id strategy) expose a
+            # `numeric_features_in_` for the upstream feature lookup but
+            # also accept team-name strings via predict_proba(DataFrame).
+            # Detect that and feed home/away team alongside the numeric row.
+            numeric_names = list(getattr(
+                club_model, "numeric_features_in_",
+                getattr(club_model, "feature_names_in_", []),
+            ))
+            available = [f for f in numeric_names if f in feature_row.index]
+            if len(available) < len(numeric_names) * 0.8:
                 skipped += 1
                 continue
 
-            X = feature_row[available].values.reshape(1, -1).astype(float)
-            X = np.nan_to_num(X, nan=0.0)
-
-            if X.shape[1] != len(feature_names):
+            X_arr = feature_row[available].values.reshape(1, -1).astype(float)
+            X_arr = np.nan_to_num(X_arr, nan=0.0)
+            if X_arr.shape[1] != len(numeric_names):
                 skipped += 1
                 continue
 
-            probs = club_model.predict_proba(X)[0]
+            if hasattr(club_model, "_cat_cols"):
+                # Team-aware model: build a DataFrame so the adapter can
+                # use real team names instead of falling back to UNK.
+                row_df = pd.DataFrame(X_arr, columns=numeric_names)
+                row_df["home_team"] = (
+                    match.home_team.canonical_name
+                    if match.home_team and getattr(match.home_team, "canonical_name", None)
+                    else "UNK"
+                )
+                row_df["away_team"] = (
+                    match.away_team.canonical_name
+                    if match.away_team and getattr(match.away_team, "canonical_name", None)
+                    else "UNK"
+                )
+                probs = club_model.predict_proba(row_df)[0]
+            else:
+                probs = club_model.predict_proba(X_arr)[0]
             pred_class = int(np.argmax(probs))
             predicted_result = INT_TO_RESULT.get(pred_class, "H")
             confidence = float(probs[pred_class])
