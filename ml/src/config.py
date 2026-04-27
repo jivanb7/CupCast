@@ -145,9 +145,19 @@ CLUB_FEATURES = [
     # Bookmaker odds (market signal — strongest single predictor)
     "odds_home", "odds_draw", "odds_away",
     "implied_prob_home", "implied_prob_draw", "implied_prob_away",
+    # Missingness indicator for the odds block — 1 = real bookmaker odds
+    # were captured, 0 = imputed with the historical median. Lets the model
+    # learn to discount the odds row when the indicator is off, instead of
+    # treating the imputed median as a real "we have no idea" signal.
+    "has_odds",
     # Team-level injury snapshot (from backend DB via scripts/export_injuries.py)
     "home_active_injuries", "away_active_injuries",
     "home_key_injuries", "away_key_injuries",
+    # 1 when injury parquet covered both teams, 0 when silent fill kicked
+    # in. Without this, the historical training data (which has zero injury
+    # parquet coverage) looks identical to "every team has 0 injuries" and
+    # the model learns to ignore the column.
+    "has_injury_data",
     # Team strength signals — added 2026-04-27 to give the model explicit
     # awareness of "1st place vs last place" instead of relying only on
     # rolling form. Computed sequentially over match history so no leakage:
@@ -160,6 +170,10 @@ CLUB_FEATURES = [
     # which calls API-Football top-scorers + injuries endpoints. Defaults
     # to 1.0 (fully available) for matches outside the current season.
     "home_key_player_avail", "away_key_player_avail",
+    # 1 when availability parquet covered both teams. Same role as
+    # has_injury_data — lets the model distinguish "all key players fit"
+    # from "we don't track this team".
+    "has_availability_data",
 ]
 
 # ---------------------------------------------------------------------------

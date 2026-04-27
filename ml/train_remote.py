@@ -88,13 +88,22 @@ RESULT_LABELS = ["H", "D", "A"]
 # Sticking with 3y until we can run a proper val-driven sweep.
 RECENCY_HALF_LIFE_YEARS = 3.0
 
-CLUB_TRAIN_END = "2022-06-01"
-CLUB_VAL_END = "2023-06-01"
-CLUB_TEST_END = "2024-06-01"
+# Windows pushed forward so the model trains on 2025-26 data where the new
+# feature columns (injuries, key-player availability, comprehensive odds)
+# are actually populated. Previously train ended 2022-06-01, val 2023-06-01,
+# test 2024-06-01 — meaning every training example had injury/availability
+# silently zero-filled and the model learned to ignore those columns. With
+# train ending 2025-12-01 the trainer sees ~4 months of real 2025-26
+# season matches with real injury/availability/odds signals.
+CLUB_TRAIN_END = "2025-12-01"
+CLUB_VAL_END = "2026-02-01"
+CLUB_TEST_END = "2026-04-01"
 
-INTL_TRAIN_END = "2020-01-01"
-INTL_VAL_END = "2022-01-01"
-INTL_TEST_END = "2024-01-01"
+# International windows mostly unchanged — friendlies/qualifiers don't have
+# the per-team injury feature pipeline so window staleness matters less.
+INTL_TRAIN_END = "2022-01-01"
+INTL_VAL_END = "2024-01-01"
+INTL_TEST_END = "2026-01-01"
 
 # Feature lists are imported from ml/src/config.py — single source of truth.
 
@@ -198,15 +207,35 @@ def _log_metrics(metrics, prefix=""):
 # Data splitting
 # ---------------------------------------------------------------------------
 def time_split(df, train_end, val_end, test_end, feature_cols, target_col="result_encoded"):
+    """Split features by match_date with train-only median imputation.
+
+    Imputation rule: any NaN in val or test gets filled with the median
+    computed on TRAIN ONLY. Previously this routine pulled values via
+    `.astype(float)` from a parquet that had already been globally imputed
+    against the full dataset (including val and test) — that's a textbook
+    leakage path because train rows ended up filled with values that depend
+    on val/test. Combined with the new `impute=False` flag in
+    `build_feature_matrix`, NaNs now arrive here intact and we fill them
+    with the right reference frame.
+    """
     train_mask = df["match_date"] < train_end
     val_mask = (df["match_date"] >= train_end) & (df["match_date"] < val_end)
     test_mask = (df["match_date"] >= val_end) & (df["match_date"] < test_end)
 
     train_dates = df.loc[train_mask, "match_date"]
 
-    X_train = df.loc[train_mask, feature_cols].astype(float)
-    X_val = df.loc[val_mask, feature_cols].astype(float)
-    X_test = df.loc[test_mask, feature_cols].astype(float)
+    # Pre-impute the relevant feature columns using TRAIN medians only.
+    train_slice = df.loc[train_mask, feature_cols]
+    medians = train_slice.median(numeric_only=True)
+    medians = medians.where(medians.notna(), 0.0)
+
+    def _fill(slice_df):
+        out = slice_df[feature_cols].apply(pd.to_numeric, errors="coerce")
+        return out.fillna(medians)
+
+    X_train = _fill(df.loc[train_mask]).astype(float)
+    X_val = _fill(df.loc[val_mask]).astype(float)
+    X_test = _fill(df.loc[test_mask]).astype(float)
     y_train = df.loc[train_mask, target_col].astype(int)
     y_val = df.loc[val_mask, target_col].astype(int)
     y_test = df.loc[test_mask, target_col].astype(int)
@@ -483,15 +512,17 @@ class _CatboostTeamIdAdapter:
 
 def train_calibrated_wrapper(base_factory, X_train, y_train, X_val, y_val,
                              sample_weight=None, base_label="model"):
-    """Cross-validated calibration on the training set.
+    """Cross-validated calibration on the training set, time-aware.
 
-    Previous round used cv='prefit' on the small val set, which over-fit
-    the calibrator and hurt log-loss. CV=3 across train re-fits the base
-    inside each fold and trains the isotonic mapping on that fold's OOF
-    predictions — much more stable. `base_factory` is a callable returning
-    an unfitted classifier (CalibratedClassifierCV refits per fold).
+    Previous round used `cv=3` (random KFold) which shuffles time-ordered
+    matches — the calibrator ended up fitting on partial-future folds and
+    predicting on partial-past folds, which is leakage. We now use
+    TimeSeriesSplit so each fold's calibration is trained on rows that
+    strictly precede its evaluation rows.
     """
-    calibrated = CalibratedClassifierCV(base_factory(), method="isotonic", cv=3)
+    from sklearn.model_selection import TimeSeriesSplit
+    tscv = TimeSeriesSplit(n_splits=3)
+    calibrated = CalibratedClassifierCV(base_factory(), method="isotonic", cv=tscv)
     calibrated.fit(X_train, y_train, sample_weight=sample_weight)
     y_prob_val = calibrated.predict_proba(X_val)
     metrics = compute_all_metrics(y_val.values, y_prob_val)
@@ -552,10 +583,13 @@ def train_stacked_ensemble(base_specs, X_train, y_train, X_val, y_val, sample_we
     refit it per fold without state leakage.
     """
     from sklearn.base import clone
-    from sklearn.model_selection import KFold
+    from sklearn.model_selection import TimeSeriesSplit
 
-    # Build a 3-fold OOF probability matrix per base model.
-    kf = KFold(n_splits=3, shuffle=True, random_state=42)
+    # Build a 3-fold OOF probability matrix per base model. Use
+    # TimeSeriesSplit (not random KFold + shuffle) so each fold's base
+    # model is fit on rows that strictly precede the evaluation rows —
+    # otherwise the meta-learner trains on leaked future-base-predictions.
+    kf = TimeSeriesSplit(n_splits=3)
     oof_blocks = []
     base_models = []
     for name, factory in base_specs:
@@ -799,10 +833,18 @@ def run_training(model_type="club", n_trials=10):
     if len(X_train) == 0:
         raise ValueError("Empty training set. Check date splits.")
 
-    sample_weight_train = recency_weights(train_dates, RECENCY_HALF_LIFE_YEARS)
-    logger.info("Recency weights (half-life=%.1fy): min=%.3f median=%.3f max=%.3f",
-                RECENCY_HALF_LIFE_YEARS, float(sample_weight_train.min()),
-                float(np.median(sample_weight_train)), float(sample_weight_train.max()))
+    # Pin the recency-weight reference to train_end so the same training
+    # data produces the same weights across reruns (the promotion gate
+    # compares val_log_loss across runs — drifting weights make those
+    # numbers non-comparable).
+    sample_weight_train = recency_weights(
+        train_dates, RECENCY_HALF_LIFE_YEARS, reference_date=train_end,
+    )
+    logger.info("Recency weights (half-life=%.1fy, ref=%s): min=%.3f median=%.3f max=%.3f",
+                RECENCY_HALF_LIFE_YEARS, train_end,
+                float(sample_weight_train.min()),
+                float(np.median(sample_weight_train)),
+                float(sample_weight_train.max()))
 
     mlflow.set_experiment(experiment_name)
     results = {}
@@ -979,26 +1021,18 @@ def run_training(model_type="club", n_trials=10):
             "model": stack_result["model"], "run_id": run.info.run_id, **stack_test
         }
 
-    # 10. Home-bias wrapper on the current leader.
-    #     +2 pp shifted to the home column, renormalised. Tests the prior
-    #     that the trained model regresses toward 33/33/33 on extreme
-    #     matchups and could use a fixed home-advantage nudge.
-    interim_best2 = min(results.keys(), key=lambda k: results[k]["log_loss"])
-    biased_base = results[interim_best2]["model"]
-    with mlflow.start_run(run_name=f"home_bias_2pp_on_{interim_best2}") as run:
-        biased = apply_home_bias(biased_base, bias_pp=2.0)
-        y_prob_val = biased.predict_proba(X_val)
-        bias_metrics = compute_all_metrics(y_val.values, y_prob_val)
-        mlflow.log_params({"model_type": "home_bias_wrapper",
-                           "base": interim_best2, "bias_pp": 2.0})
-        _log_metrics(bias_metrics, prefix="val_")
-        if has_test:
-            bias_test = evaluate_on_test(biased, X_test, y_test, f"home_bias_{interim_best2}")
-        else:
-            bias_test = bias_metrics
-        results[f"home_bias_{interim_best2}"] = {
-            "model": biased, "run_id": run.info.run_id, **bias_test
-        }
+    # 10. (Removed) home_bias_2pp wrapper. Previously this stacked a fixed
+    #     +2pp home shift on top of the calibrated leader to chase accuracy
+    #     on extreme matchups. It worked on accuracy but degraded
+    #     calibration (the wrapper renormalises after the shift, which
+    #     skews the isotonic mapping the calibrator just fit). Production
+    #     now uses the 85% book-anchored blend in prediction_service for
+    #     the same job — anchored to real market data instead of a fixed
+    #     prior — so the home_bias candidate became redundant and could
+    #     win the (-accuracy, log_loss) tiebreak by 0.001 acc while losing
+    #     materially on Brier/calibration. Kept the apply_home_bias helper
+    #     in this file for ad-hoc experiments but it no longer enters the
+    #     promotion pool.
 
     # Select best by ACCURACY (primary, higher = better) with log_loss as
     # tiebreaker (lower = better) when accuracies are within 0.001 of each

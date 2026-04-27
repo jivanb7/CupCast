@@ -42,10 +42,35 @@ def _build_team_history(matches_df: pd.DataFrame) -> pd.DataFrame:
       - Away team perspective: team=away_team, is_home=0, goals_for=away_goals, etc.
 
     Sorted by (team, match_date) for chronological rolling computations.
+
+    NOTE: rows flagged `is_upcoming=True` (dummy upcoming-fixture rows the
+    prediction service appends so it can run inference through the same
+    feature pipeline) keep their identity in `match_idx` / `team` / `is_home`
+    so callers can route results back, but their *stat* columns
+    (won/drawn/lost/goals_for/etc.) are masked to NaN. pandas
+    `rolling(...).mean()` ignores NaN, so subsequent same-team upcoming rows
+    no longer see prior dummies as fake "H wins" or "0 shots". Without this
+    mask, batching N upcoming fixtures of the same team poisons each other's
+    rolling form / shot stats / clean sheet pct.
     """
     df = matches_df.copy()
     # Ensure unique match identifier
     df["match_idx"] = np.arange(len(df))
+
+    # Resolve the upcoming-mask once. Treated as False everywhere if the
+    # column doesn't exist (i.e., training-time feature engineering, where
+    # every row is a real played match).
+    if "is_upcoming" in df.columns:
+        is_upcoming = df["is_upcoming"].fillna(False).astype(bool).values
+    else:
+        is_upcoming = np.zeros(len(df), dtype=bool)
+    upcoming_mask = pd.Series(is_upcoming, index=df.index)
+
+    def _mask_upcoming(s: pd.Series) -> pd.Series:
+        """Return s with values at upcoming-rows replaced by NaN."""
+        out = s.astype(float).copy()
+        out[upcoming_mask.values] = np.nan
+        return out
 
     # Home perspective
     home = pd.DataFrame({
@@ -54,17 +79,19 @@ def _build_team_history(matches_df: pd.DataFrame) -> pd.DataFrame:
         "team": df["home_team"],
         "opponent": df["away_team"],
         "is_home": 1,
-        "goals_for": df["home_goals"],
-        "goals_against": df["away_goals"],
-        "result": df["result"],
-        "won": (df["result"] == "H").astype(int),
-        "drawn": (df["result"] == "D").astype(int),
-        "lost": (df["result"] == "A").astype(int),
-        "points": df["result"].map({"H": 3, "D": 1, "A": 0}).fillna(0).astype(int),
-        "clean_sheet": (df["away_goals"] == 0).astype(int),
-        "failed_to_score": (df["home_goals"] == 0).astype(int),
+        "is_upcoming": is_upcoming,
+        "goals_for": _mask_upcoming(df["home_goals"]),
+        "goals_against": _mask_upcoming(df["away_goals"]),
+        "result": df["result"].where(~upcoming_mask, other=np.nan),
+        "won": _mask_upcoming((df["result"] == "H").astype(float)),
+        "drawn": _mask_upcoming((df["result"] == "D").astype(float)),
+        "lost": _mask_upcoming((df["result"] == "A").astype(float)),
+        "points": _mask_upcoming(df["result"].map({"H": 3, "D": 1, "A": 0}).astype(float)),
+        "clean_sheet": _mask_upcoming((df["away_goals"] == 0).astype(float)),
+        "failed_to_score": _mask_upcoming((df["home_goals"] == 0).astype(float)),
     })
-    # Shot stats (may be NA)
+    # Shot stats (may be NA). Mask upcoming rows so rolling means ignore
+    # the dummy "0" sentinels prediction_service uses.
     for col_home, col_away, name in [
         ("home_shots", "away_shots", "shots"),
         ("home_shots_on_target", "away_shots_on_target", "shots_on_target"),
@@ -73,7 +100,7 @@ def _build_team_history(matches_df: pd.DataFrame) -> pd.DataFrame:
         ("home_yellow_cards", "away_yellow_cards", "yellow_cards"),
     ]:
         if col_home in df.columns:
-            home[name] = pd.to_numeric(df[col_home], errors="coerce")
+            home[name] = _mask_upcoming(pd.to_numeric(df[col_home], errors="coerce"))
         else:
             home[name] = np.nan
 
@@ -89,15 +116,16 @@ def _build_team_history(matches_df: pd.DataFrame) -> pd.DataFrame:
         "team": df["away_team"],
         "opponent": df["home_team"],
         "is_home": 0,
-        "goals_for": df["away_goals"],
-        "goals_against": df["home_goals"],
-        "result": df["result"],
-        "won": (df["result"] == "A").astype(int),
-        "drawn": (df["result"] == "D").astype(int),
-        "lost": (df["result"] == "H").astype(int),
-        "points": df["result"].map({"H": 0, "D": 1, "A": 3}).fillna(0).astype(int),
-        "clean_sheet": (df["home_goals"] == 0).astype(int),
-        "failed_to_score": (df["away_goals"] == 0).astype(int),
+        "is_upcoming": is_upcoming,
+        "goals_for": _mask_upcoming(df["away_goals"]),
+        "goals_against": _mask_upcoming(df["home_goals"]),
+        "result": df["result"].where(~upcoming_mask, other=np.nan),
+        "won": _mask_upcoming((df["result"] == "A").astype(float)),
+        "drawn": _mask_upcoming((df["result"] == "D").astype(float)),
+        "lost": _mask_upcoming((df["result"] == "H").astype(float)),
+        "points": _mask_upcoming(df["result"].map({"H": 0, "D": 1, "A": 3}).astype(float)),
+        "clean_sheet": _mask_upcoming((df["home_goals"] == 0).astype(float)),
+        "failed_to_score": _mask_upcoming((df["away_goals"] == 0).astype(float)),
     })
     for col_away, col_home, name in [
         ("away_shots", "home_shots", "shots"),
@@ -107,7 +135,7 @@ def _build_team_history(matches_df: pd.DataFrame) -> pd.DataFrame:
         ("away_yellow_cards", "home_yellow_cards", "yellow_cards"),
     ]:
         if col_away in df.columns:
-            away[name] = pd.to_numeric(df[col_away], errors="coerce")
+            away[name] = _mask_upcoming(pd.to_numeric(df[col_away], errors="coerce"))
         else:
             away[name] = np.nan
 
@@ -275,10 +303,18 @@ def compute_h2h_features(
     """
     Compute head-to-head statistics between the specific home/away team pair.
     For each match, looks at the last n_meetings between the two teams (any venue).
+
+    Upcoming dummy rows (`is_upcoming=True`) are excluded from the "prior
+    meetings" lookup so two batched upcoming fixtures of the same pair don't
+    count each other as a real H2H result. The dummy rows themselves still
+    receive H2H features computed from actual prior meetings.
     """
     df = matches_df.copy()
     df["match_idx"] = np.arange(len(df))
     df = df.sort_values("match_date").reset_index(drop=True)
+    if "is_upcoming" not in df.columns:
+        df["is_upcoming"] = False
+    df["is_upcoming"] = df["is_upcoming"].fillna(False).astype(bool)
 
     # Create a pair key (alphabetically sorted for consistency)
     df["pair"] = df.apply(
@@ -290,8 +326,10 @@ def compute_h2h_features(
         group = group.sort_values("match_date").reset_index(drop=True)
         for i in range(len(group)):
             row = group.iloc[i]
-            # Prior meetings (strict date < current)
+            # Prior meetings: strict date < current AND only real (played)
+            # matches, never another upcoming dummy from the same batch.
             prior = group.iloc[:i]
+            prior = prior[~prior["is_upcoming"]]
             if len(prior) == 0:
                 results.append({
                     "match_idx": row["match_idx"],
@@ -358,8 +396,17 @@ def compute_context_features(
     history["prev_match_date"] = history.groupby("team")["match_date"].shift(1)
     history["days_since_last"] = (history["match_date"] - history["prev_match_date"]).dt.days
 
-    # Count historical matches per team (for is_new_team)
-    history["match_count"] = history.groupby("team").cumcount()
+    # Count historical matches per team (for is_new_team). Only PLAYED
+    # matches contribute — otherwise an upcoming dummy bumps a team's count
+    # past the new-team threshold and the model loses the "this team has
+    # almost no history" signal at predict time.
+    if "is_upcoming" in history.columns:
+        played_mask = ~history["is_upcoming"].fillna(False).astype(bool)
+    else:
+        played_mask = pd.Series(True, index=history.index)
+    history["match_count"] = (
+        played_mask.groupby(history["team"]).cumsum().sub(played_mask.astype(int)).astype(int)
+    )
 
     # Home team rest
     home_ctx = history[history["is_home"] == 1][["match_idx", "days_since_last", "match_count"]].rename(
@@ -571,12 +618,14 @@ def add_availability_features(
         logger.warning("Availability parquet not found at %s — defaulting to 1.0", path)
         for c in out_cols:
             df[c] = 1.0
+        df["has_availability_data"] = 0
         return df
 
     if "home_team_id" not in df.columns or "away_team_id" not in df.columns:
         logger.warning("home_team_id/away_team_id not in feature frame — defaulting availability to 1.0")
         for c in out_cols:
             df[c] = 1.0
+        df["has_availability_data"] = 0
         return df
 
     avail = pd.read_parquet(path)[["team_id", "key_player_avail"]]
@@ -592,6 +641,12 @@ def add_availability_features(
 
     df = df.merge(home, on="home_team_id", how="left")
     df = df.merge(away, on="away_team_id", how="left")
+
+    # has_availability_data = 1 only when BOTH teams resolved against the
+    # parquet. Lets the model learn "no data" vs "all key players fit".
+    df["has_availability_data"] = (
+        df["home_key_player_avail"].notna() & df["away_key_player_avail"].notna()
+    ).astype(int)
 
     for c in out_cols:
         df[c] = df[c].fillna(1.0).astype(float)
@@ -622,12 +677,14 @@ def add_injury_features(
         logger.warning("Injuries parquet not found at %s — filling zero columns", path)
         for c in out_cols:
             df[c] = 0
+        df["has_injury_data"] = 0
         return df
 
     if "home_team_id" not in df.columns or "away_team_id" not in df.columns:
         logger.warning("home_team_id/away_team_id not in feature frame — filling zero injury columns")
         for c in out_cols:
             df[c] = 0
+        df["has_injury_data"] = 0
         return df
 
     inj = pd.read_parquet(path)[
@@ -647,6 +704,12 @@ def add_injury_features(
 
     df = df.merge(home, on="home_team_id", how="left")
     df = df.merge(away, on="away_team_id", how="left")
+
+    # has_injury_data = 1 only when BOTH teams resolved. Distinguishes
+    # "no injuries" from "we have no data on this team's injuries".
+    df["has_injury_data"] = (
+        df["home_active_injuries"].notna() & df["away_active_injuries"].notna()
+    ).astype(int)
 
     for c in out_cols:
         df[c] = df[c].fillna(0).astype(int)
@@ -818,30 +881,76 @@ def _compute_derived_features(features_df: pd.DataFrame) -> pd.DataFrame:
 def impute_missing_features(
     features_df: pd.DataFrame,
     league_code: str | None = None,
+    reference_df: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
-    """Fill any remaining NaN values after feature computation."""
+    """Fill any remaining NaN values after feature computation.
+
+    `reference_df`, if provided, is the slice used to compute median fills.
+    At training time pass the TRAIN slice so medians don't carry val/test
+    information into train rows (per-row leakage). When omitted, medians
+    come from features_df itself (the legacy behaviour — fine at prediction
+    time since the prediction frame is overwhelmingly historical).
+
+    Odds (`odds_*`, `implied_prob_*`) are NO LONGER neutralised to 1/3 here.
+    Previously a missing odds row got `(1/3, 1/3, 1/3)` which the model
+    learned as a real "we have no idea" pattern, then at inference time real
+    odds would drift the predictions back toward neutrality. Instead we now
+    emit `has_odds` (binary) — the model can condition on "do we have
+    market information?" — and leave the actual odds at NaN (HistGB,
+    LightGBM, CatBoost, XGBoost all natively handle NaN; sklearn models go
+    through the median fill below, which is fine since the indicator
+    captures the missingness signal anyway).
+    """
     df = features_df.copy()
+    ref = reference_df if reference_df is not None else df
 
-    # Odds features: use neutral 1/3 probability, not median (avoids look-ahead bias)
-    ODDS_NEUTRAL = {
-        "odds_home": 0.0, "odds_draw": 0.0, "odds_away": 0.0,
-        "implied_prob_home": 1.0/3.0, "implied_prob_draw": 1.0/3.0, "implied_prob_away": 1.0/3.0,
-    }
-    for col, neutral_val in ODDS_NEUTRAL.items():
+    # Missingness indicators — emitted BEFORE any imputation so the flag
+    # actually reflects the underlying data, not the post-fill state.
+    # `has_odds`: 1 when bookmaker odds were captured for the match, else 0.
+    # `has_injury_data`: 1 when team_injuries.parquet covered both teams.
+    # `has_availability_data`: 1 when team_availability.parquet covered both
+    # teams. The historical training data has zero coverage for the latter
+    # two columns (parquets only populated since 2025-26) so without these
+    # flags the model can't tell "no injuries" from "no data".
+    if "implied_prob_home" in df.columns:
+        df["has_odds"] = (
+            df["implied_prob_home"].notna()
+            & df["implied_prob_draw"].notna()
+            & df["implied_prob_away"].notna()
+        ).astype(int)
+    elif "has_odds" not in df.columns:
+        df["has_odds"] = 0
+
+    # Now fill the odds columns. Use the median implied prob from rows that
+    # actually have odds — this is a more honest "average market view" than
+    # the flat 1/3 prior, and the has_odds flag lets the model down-weight
+    # it when the indicator is 0.
+    for col in ("odds_home", "odds_draw", "odds_away"):
         if col in df.columns and df[col].isna().any():
-            df[col] = df[col].fillna(neutral_val)
+            real_med = ref[col].median() if col in ref.columns else np.nan
+            if pd.isna(real_med):
+                real_med = 0.0
+            df[col] = df[col].fillna(real_med)
+    for col in ("implied_prob_home", "implied_prob_draw", "implied_prob_away"):
+        if col in df.columns and df[col].isna().any():
+            real_med = ref[col].median() if col in ref.columns else np.nan
+            if pd.isna(real_med):
+                real_med = 1.0 / 3.0
+            df[col] = df[col].fillna(real_med)
 
-    # Numeric columns: fill with column median (more robust than mean)
+    # Numeric columns: fill with the *reference* median so train/val/test
+    # don't leak medians into each other when this is called from a
+    # training pipeline that passes reference_df=train_slice.
     numeric_cols = df.select_dtypes(include=[np.number]).columns
     for col in numeric_cols:
         if df[col].isna().any():
-            fill_val = df[col].median()
+            fill_val = ref[col].median() if col in ref.columns else df[col].median()
             if pd.isna(fill_val):
                 fill_val = 0.0
             df[col] = df[col].fillna(fill_val)
 
     # Boolean-like columns: fill with 0
-    bool_cols = [c for c in df.columns if c.startswith("is_")]
+    bool_cols = [c for c in df.columns if c.startswith("is_") or c.startswith("has_")]
     for col in bool_cols:
         df[col] = df[col].fillna(0).astype(int)
 
@@ -852,9 +961,22 @@ def build_feature_matrix(
     matches_df: pd.DataFrame,
     model_type: str = "club",
     rankings_df: pd.DataFrame | None = None,
+    impute: bool = True,
 ) -> pd.DataFrame:
     """
     Assemble the full feature matrix for a given model type.
+
+    `impute=True` (the default, used by the prediction path) fills NaNs in
+    place using medians computed on the full feature frame — fine because
+    the prediction frame is overwhelmingly historical data, so the leak is
+    bounded.
+
+    `impute=False` skips imputation so the training pipeline can split
+    train/val/test FIRST and then call `impute_missing_features` with
+    `reference_df=train_slice` — that's the only way to compute fills
+    without leaking val/test medians into train rows. The training entry
+    point (`run_feature_engineering`) writes the un-imputed parquet; the
+    trainer (`train_remote.py`) calls `impute_missing_features` post-split.
     """
     from ml.src.config import RESULT_TO_INT
 
@@ -925,7 +1047,18 @@ def build_feature_matrix(
             odds_data["implied_prob_home"] = raw_h / total
             odds_data["implied_prob_draw"] = raw_d / total
             odds_data["implied_prob_away"] = raw_a / total
+            # Missingness indicator emitted at feature-build time so it
+            # survives even when the trainer skips imputation. =1 when all
+            # three implied probs are available, =0 when the row had no
+            # bookmaker data and the model should discount the odds block.
+            odds_data["has_odds"] = (
+                odds_data["implied_prob_home"].notna()
+                & odds_data["implied_prob_draw"].notna()
+                & odds_data["implied_prob_away"].notna()
+            ).astype(int)
             features = features.merge(odds_data, on="match_idx", how="left")
+        else:
+            features["has_odds"] = 0
 
         # 7. Injury features (team-level snapshot)
         features = add_injury_features(features)
@@ -934,7 +1067,8 @@ def build_feature_matrix(
         features = add_availability_features(features)
 
         # Impute and select final columns
-        features = impute_missing_features(features)
+        if impute:
+            features = impute_missing_features(features)
 
         # Ensure all expected columns exist
         expected = CLUB_FEATURES
@@ -963,8 +1097,9 @@ def build_feature_matrix(
         # Injury features (team-level snapshot)
         features = add_injury_features(features)
 
-        # Impute
-        features = impute_missing_features(features)
+        # Impute (skip when caller wants to do per-split imputation)
+        if impute:
+            features = impute_missing_features(features)
 
         # Ensure all expected columns exist
         expected = INTL_FEATURES
@@ -988,23 +1123,33 @@ def build_feature_matrix(
 
 
 def run_feature_engineering() -> None:
-    """Top-level function: compute features for all match types."""
+    """Top-level function: compute features for all match types.
+
+    Writes the parquets with `impute=False` so the trainer can do
+    train-only imputation post-split (no median leakage from val/test into
+    train). The prediction service still gets imputation by default when
+    it calls `build_feature_matrix` with the live frame, since at predict
+    time the leak is bounded — predictions are made on a frame that's
+    overwhelmingly historical played matches.
+    """
     logger.info("Starting feature engineering...")
 
     club_df = pd.read_parquet(PROCESSED_DIR / "club_matches.parquet")
     intl_df = pd.read_parquet(PROCESSED_DIR / "intl_matches.parquet")
     rankings_df = pd.read_parquet(PROCESSED_DIR / "fifa_rankings.parquet")
 
-    # Club features
-    club_features = build_feature_matrix(club_df, model_type="club")
+    # Club features (un-imputed; trainer handles per-split fills)
+    club_features = build_feature_matrix(club_df, model_type="club", impute=False)
     club_features.to_parquet(FEATURES_DIR / "club_features.parquet", index=False)
-    logger.info("Club features saved: %d rows", len(club_features))
+    logger.info("Club features saved: %d rows (un-imputed)", len(club_features))
 
     # International features -- filter to post-2000 for efficiency
     intl_recent = intl_df[intl_df["match_date"] >= "2000-01-01"].reset_index(drop=True)
-    intl_features = build_feature_matrix(intl_recent, model_type="intl", rankings_df=rankings_df)
+    intl_features = build_feature_matrix(
+        intl_recent, model_type="intl", rankings_df=rankings_df, impute=False
+    )
     intl_features.to_parquet(FEATURES_DIR / "intl_features.parquet", index=False)
-    logger.info("International features saved: %d rows", len(intl_features))
+    logger.info("International features saved: %d rows (un-imputed)", len(intl_features))
 
     logger.info("Feature engineering complete.")
 

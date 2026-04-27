@@ -158,8 +158,14 @@ def batch_predict_upcoming(
     # Load historical data for feature computation context
     club_matches = pd.read_parquet(PROCESSED_DIR / "club_matches.parquet")
 
-    # Append ALL fixtures at once (with dummy goals) and build features in one pass
-    # This avoids calling build_feature_matrix N times (which refits Dixon-Coles each time)
+    # Append ALL fixtures at once and build features in one pass. is_upcoming
+    # is the load-bearing flag: it tells every aggregator in
+    # feature_engineering.py to mask this row's stats so dummies (goals=0,
+    # shots=0, result="H") don't pollute the rolling form / Elo / shot
+    # stats / H2H of OTHER batched upcoming rows for the same team. Odds
+    # are passed through from fixtures.parquet so the model gets its
+    # strongest feature group at predict time — the trained club model
+    # leans on odds_* + implied_prob_* for ~25% of total importance.
     fixture_rows = []
     for _, fixture in fixtures.iterrows():
         fixture_rows.append({
@@ -168,10 +174,14 @@ def batch_predict_upcoming(
             "away_team": fixture["away_team"],
             "home_goals": 0,
             "away_goals": 0,
-            "result": "H",  # Dummy — ignored in rolling features due to shift(1)
-            "result_encoded": 0,
+            "is_upcoming": True,
+            "result": "H",            # masked out by is_upcoming
+            "result_encoded": 0,      # survives dropna so the row reaches inference
             "league_code": fixture.get("league_code", "E0"),
             "season": "2025-26",
+            "odds_home": fixture.get("odds_home"),
+            "odds_draw": fixture.get("odds_draw"),
+            "odds_away": fixture.get("odds_away"),
         })
 
     temp_fixtures = pd.DataFrame(fixture_rows)
@@ -196,10 +206,10 @@ def batch_predict_upcoming(
             if i >= len(fixture_features):
                 continue
             feature_row = fixture_features.iloc[i]
+            # build_feature_matrix already imputes NaN with the train-time
+            # median strategy. Don't re-fill with 0 — that's the train/predict
+            # imputation mismatch that masked feature signal pre-fix.
             X = feature_row[CLUB_FEATURES].values.reshape(1, -1).astype(float)
-
-            # Replace NaN with 0 for prediction
-            X = np.nan_to_num(X, nan=0.0)
 
             probs = club_model.predict_proba(X)[0]
             pred_class = int(np.argmax(probs))
