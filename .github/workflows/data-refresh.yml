@@ -37,9 +37,13 @@ on:
           - predict-only
           - train-only
       promote_margin:
-        description: "Required relative improvement to promote (e.g. 0.01 = 1%)"
+        description: "Required relative improvement to promote (0.0 = any improvement, 0.01 = 1%)"
         required: false
-        default: "0.01"
+        # Default 0.0 — our model family lives in val_log_loss 1.000–1.080,
+        # a 1% margin (0.01 absolute) gets rejected by run-to-run variance
+        # so legitimate fresh-data improvements never promoted. Override
+        # via workflow_dispatch input if churn becomes a problem.
+        default: "0.0"
         type: string
 
 jobs:

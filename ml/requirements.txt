@@ -8,6 +8,11 @@ catboost>=1.2.0
 optuna>=4.7.0
 mlflow>=3.10.0
 google-cloud-storage>=2.10.0
+# psycopg2-binary so scripts/promote_if_better.py can write to the
+# production Postgres model_registry table from the workflow runner.
+# The backend already has it; we need it in the ML runtime too because
+# the promote step runs with ml/requirements.txt installed.
+psycopg2-binary>=2.9.0
 shap>=0.50.0
 requests>=2.32.0
 kagglehub>=1.0.0
