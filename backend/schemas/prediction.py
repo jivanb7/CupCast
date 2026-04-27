@@ -45,11 +45,27 @@ class DailyAccuracy(BaseModel):
     accuracy: float
 
 
+class LeagueWindowDelta(BaseModel):
+    """Per-league accuracy in the recent vs prior window plus the signed delta.
+
+    `recent` and `prior` are accuracy fractions (0..1) over the last 7 and the
+    7 days before that. `delta_pp` is `(recent - prior) * 100` rounded to one
+    decimal so the frontend can render the up/down arrow without re-doing the
+    arithmetic. `null` on any field means insufficient sample in that window.
+    """
+    recent: Optional[float] = None
+    prior: Optional[float] = None
+    delta_pp: Optional[float] = None
+    n_recent: int = 0
+    n_prior: int = 0
+
+
 class ModelPerformanceResponse(BaseModel):
     overall_accuracy: float
     overall_f1_macro: float
     overall_log_loss: float
     accuracy_by_league: dict[str, float]
+    accuracy_by_league_window: dict[str, LeagueWindowDelta] = {}
     accuracy_by_date: list[DailyAccuracy] = []
     accuracy_last_30_days: Optional[float] = None
     total_predictions: int

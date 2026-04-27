@@ -1,0 +1,164 @@
+/* CupCast — design tokens, atmosphere, and base utilities.
+   Ported from design_handoff_cupcast/cc-shared.css. */
+
+@import url('https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,600;0,9..144,700;1,9..144,400;1,9..144,600;1,9..144,700&family=Inter+Tight:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
+
+.cc-root {
+  /* Default = night */
+  --cc-bg: #020617;
+  --cc-surface: #0E1223;
+  --cc-surface-2: #141a30;
+  --cc-text: #F8FAFC;
+  --cc-muted: #94A3B8;
+  --cc-dim: #475569;
+  --cc-line: rgba(248,250,252,0.08);
+  --cc-line-strong: rgba(248,250,252,0.18);
+
+  --cc-gold: #F59E0B;
+  --cc-green: #22C55E;
+  --cc-amber: #FBBF24;
+  --cc-red: #EF4444;
+  --cc-blue: #3B82F6;
+  --cc-rose: #f0a8b8;
+
+  --cc-display: 'Inter Tight', system-ui, sans-serif;
+  --cc-body: 'Inter Tight', system-ui, sans-serif;
+  --cc-serif: 'Fraunces', Georgia, serif;
+  --cc-mono: 'JetBrains Mono', ui-monospace, monospace;
+
+  font-family: var(--cc-body);
+  color: var(--cc-text);
+  background: var(--cc-bg);
+  font-feature-settings: 'ss01','cv11','tnum';
+  -webkit-font-smoothing: antialiased;
+  letter-spacing: -0.005em;
+}
+
+.cc-root.cc-day {
+  --cc-bg: #F1EDE5;
+  --cc-surface: #FFFFFF;
+  --cc-surface-2: #F7F3EB;
+  --cc-text: #0F172A;
+  --cc-muted: #64748B;
+  --cc-dim: #94A3B8;
+  --cc-line: rgba(15,23,42,0.10);
+  --cc-line-strong: rgba(15,23,42,0.22);
+}
+
+.cc-root *, .cc-root *::before, .cc-root *::after { box-sizing: border-box; }
+.cc-root .tnum { font-variant-numeric: tabular-nums; }
+.cc-root .serif { font-family: var(--cc-serif); }
+.cc-root .mono { font-family: var(--cc-mono); }
+
+.cc-root a { color: inherit; }
+
+/* Aurora — drifting blobs, slow loop */
+.cc-aurora {
+  position: absolute; inset: 0; overflow: hidden; pointer-events: none;
+  z-index: 0;
+}
+.cc-aurora::before, .cc-aurora::after,
+.cc-aurora .b1, .cc-aurora .b2 {
+  content: ''; position: absolute; border-radius: 50%;
+  filter: blur(80px); opacity: 0.55; mix-blend-mode: screen;
+}
+.cc-root.cc-day .cc-aurora::before,
+.cc-root.cc-day .cc-aurora::after,
+.cc-root.cc-day .cc-aurora .b1,
+.cc-root.cc-day .cc-aurora .b2 { mix-blend-mode: multiply; opacity: 0.18; filter: blur(90px); }
+
+.cc-aurora::before {
+  width: 60%; height: 60%; left: -10%; top: -20%;
+  background: radial-gradient(circle, #1e3a8a 0%, transparent 65%);
+  animation: cc-drift1 48s ease-in-out infinite alternate;
+}
+.cc-aurora::after {
+  width: 55%; height: 55%; right: -15%; top: 10%;
+  background: radial-gradient(circle, #be3a5c 0%, transparent 65%);
+  animation: cc-drift2 56s ease-in-out infinite alternate;
+}
+.cc-aurora .b1 {
+  width: 50%; height: 50%; left: 30%; bottom: -20%;
+  background: radial-gradient(circle, #d97706 0%, transparent 65%);
+  animation: cc-drift3 60s ease-in-out infinite alternate;
+}
+.cc-aurora .b2 {
+  width: 45%; height: 45%; right: 20%; bottom: 0%;
+  background: radial-gradient(circle, #0ea5e9 0%, transparent 65%);
+  animation: cc-drift4 52s ease-in-out infinite alternate;
+}
+@keyframes cc-drift1 { 0%{transform:translate(0,0)} 100%{transform:translate(8%,12%)} }
+@keyframes cc-drift2 { 0%{transform:translate(0,0)} 100%{transform:translate(-6%,10%)} }
+@keyframes cc-drift3 { 0%{transform:translate(0,0)} 100%{transform:translate(10%,-6%)} }
+@keyframes cc-drift4 { 0%{transform:translate(0,0)} 100%{transform:translate(-8%,-10%)} }
+
+/* 4% noise grain */
+.cc-grain {
+  position: absolute; inset: 0; pointer-events: none; z-index: 1;
+  opacity: 0.04; mix-blend-mode: overlay;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='200' height='200'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/></filter><rect width='100%' height='100%' filter='url(%23n)' opacity='0.9'/></svg>");
+}
+
+/* Crest base */
+.cc-crest {
+  display: inline-flex; align-items: center; justify-content: center;
+  border-radius: 50%; font-family: var(--cc-mono);
+  font-weight: 600; letter-spacing: 0.02em;
+  flex-shrink: 0;
+}
+
+/* Probability bar */
+.cc-probbar { display:flex; height: 10px; border-radius: 999px; overflow: hidden; background: var(--cc-line); }
+.cc-probbar > span { display:block; height: 100%; transition: flex 250ms ease; }
+.cc-probbar .h { background: var(--cc-green); }
+.cc-probbar .d { background: var(--cc-amber); }
+.cc-probbar .a { background: var(--cc-red); }
+
+/* Live dot pulse */
+.cc-live-dot {
+  width: 8px; height: 8px; border-radius: 50%; background: var(--cc-green);
+  display: inline-block; box-shadow: 0 0 0 0 rgba(34,197,94,0.55);
+  animation: cc-pulse 1.6s ease-out infinite;
+}
+@keyframes cc-pulse {
+  0%   { box-shadow: 0 0 0 0 rgba(34,197,94,0.55); }
+  70%  { box-shadow: 0 0 0 8px rgba(34,197,94,0); }
+  100% { box-shadow: 0 0 0 0 rgba(34,197,94,0); }
+}
+
+.cc-value-chip {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 2px 7px; border-radius: 999px;
+  border: 1px solid var(--cc-gold);
+  color: var(--cc-gold);
+  font-family: var(--cc-mono);
+  font-size: 10px; font-weight: 600; letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.cc-tile {
+  background: var(--cc-surface);
+  border: 1px solid var(--cc-line);
+  border-radius: 6px;
+  position: relative;
+}
+
+@keyframes cc-rise { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: none; } }
+.cc-rise { animation: cc-rise 400ms cubic-bezier(.2,.7,.2,1) both; }
+
+.cc-hover { transition: transform .15s ease, box-shadow .15s ease, border-color .15s ease; }
+.cc-hover:hover { transform: translateY(-1px); border-color: rgba(245,158,11,0.55); box-shadow: 0 0 0 1px rgba(245,158,11,0.18), 0 8px 30px rgba(245,158,11,0.06); }
+
+.cc-eyebrow {
+  font-family: var(--cc-mono);
+  font-size: 10px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--cc-muted);
+}
+
+@keyframes cc-digit-up { from { transform: translateY(100%); opacity: 0; } to { transform: none; opacity: 1; } }
+@keyframes cc-word-rise { from { opacity: 0; transform: translateY(0.6em); } to { opacity: 1; transform: none; } }
+@keyframes cc-line-in { to { stroke-dashoffset: 0; } }
+@keyframes cc-fade-in { to { opacity: 1; } }
+@keyframes cc-vert { 0% { transform: translateY(0); } 100% { transform: translateY(-50%); } }

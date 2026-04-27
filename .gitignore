@@ -71,3 +71,6 @@ docs/
 /dashboard-*.png
 /page-*.png
 infra/
+
+# Design reference assets — ephemeral; not part of the production codebase
+design_handoff_cupcast/

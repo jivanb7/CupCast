@@ -1,384 +1,360 @@
-import { useState, useEffect, useMemo, useCallback } from 'react'
-import { useSearchParams } from 'react-router-dom'
-import { getUpcomingMatches, getResults } from '../services/api'
-import MatchRow from '../components/match/MatchRow'
-import LeagueFilterBar from '../components/ui/LeagueFilterBar'
-import Pagination from '../components/ui/Pagination'
-import LoadingSpinner from '../components/ui/LoadingSpinner'
-import { matchToCountrySlug } from '../utils/countryMap'
+// Matches — A + B blend
+// Editorial card composition with varied widths (A) + B's vertical league
+// tickertape rail on the left.
 
-const PAGE_SIZE = 10
-const VALID_TABS = ['today', 'upcoming', 'recent']
-const VALID_WINDOWS = ['7', '30', 'season']
-const WINDOW_DAYS = { '7': 7, '30': 30, season: 365 }
+import { useMemo, useState } from 'react'
+import { Link } from 'react-router-dom'
+import Aurora from '../components/cc/Aurora'
+import Crest from '../components/cc/Crest'
+import ProbBar, { ProbLegend } from '../components/cc/ProbBar'
+import LiveBadge from '../components/cc/LiveBadge'
+import CCNav from '../components/cc/CCNav'
+import UpdatedBadge from '../components/cc/UpdatedBadge'
+import CardFooter from '../components/cc/CardFooter'
+import useCCTheme from '../hooks/useCCTheme'
+import useClock from '../hooks/useClock'
+import useUpcomingMatches from '../hooks/useUpcomingMatches'
+import useRecentMatches from '../hooks/useRecentMatches'
+import { LEAGUE_FLAG } from '../lib/data'
+import { emptyState } from '../lib/reasons'
 
-function isToday(dateStr) {
-  return dateStr === new Date().toLocaleDateString('en-CA')
-}
+// Rail entries are keyed by backend league_code so the filter is stable
+// across renders (display label comes from the adapter's `m.league`).
+const RAIL = [
+  { code: 'ALL', label: 'ALL', flag: '⚽' },
+  { code: 'epl', label: 'EPL', flag: '🏴' },
+  { code: 'laliga', label: 'La Liga', flag: '🇪🇸' },
+  { code: 'seriea', label: 'Serie A', flag: '🇮🇹' },
+  { code: 'bundesliga', label: 'Bundesliga', flag: '🇩🇪' },
+  { code: 'ligue1', label: 'Ligue 1', flag: '🇫🇷' },
+  { code: 'ucl', label: 'UCL', flag: '⭐' },
+  { code: 'mls', label: 'MLS', flag: '🇺🇸' },
+  { code: 'eredivisie', label: 'Eredivisie', flag: '🇳🇱' },
+  { code: 'worldcup', label: 'WC26', flag: '🏆' },
+  { code: 'championship', label: 'EFL Champ', flag: '🏴' },
+]
 
-function formatTimeChip(utcTime, dateStr) {
-  if (!utcTime || utcTime === 'nan' || utcTime === 'NaN') return 'TBD'
-  const d = dateStr || new Date().toISOString().slice(0, 10)
-  const dt = new Date(`${d}T${utcTime}:00Z`)
-  if (isNaN(dt.getTime())) return 'TBD'
-  return dt.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true })
-}
-
-function formatDateHeader(dateStr) {
-  if (!dateStr) return ''
-  const d = new Date(dateStr + 'T00:00:00')
-  return d.toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' })
-}
-
-function dayDeltaLabel(dateStr) {
-  if (!dateStr) return ''
-  const today = new Date()
-  today.setHours(0, 0, 0, 0)
-  const d = new Date(dateStr + 'T00:00:00')
-  const diff = Math.round((d - today) / (24 * 60 * 60 * 1000))
-  if (diff === 1) return 'tomorrow'
-  if (diff === 0) return 'today'
-  if (diff < 0) return null
-  return null
-}
-
-function groupBy(arr, keyFn) {
-  const map = new Map()
-  arr.forEach((item) => {
-    const k = keyFn(item)
-    if (!map.has(k)) map.set(k, [])
-    map.get(k).push(item)
-  })
-  return [...map.entries()]
-}
-
-function TabButton({ active, onClick, children }) {
-  return (
-    <button
-      type="button"
-      role="tab"
-      aria-selected={active}
-      onClick={onClick}
-      className={`px-4 py-2 text-sm font-semibold rounded-[7px] transition-colors cursor-pointer ${
-        active ? 'bg-accent-gold text-deep' : 'text-foreground-muted hover:text-foreground'
-      }`}
-    >
-      {children}
-    </button>
-  )
-}
-
-function TimeChipDivider({ time, count, label }) {
-  return (
-    <div className="flex items-center gap-2.5 mt-4 mb-2">
-      <span className="text-[11px] text-accent-gold font-bold tracking-[0.04em]">{label || time}</span>
-      <span className="flex-1 h-px bg-white/5" />
-      {count != null && (
-        <span className="text-[10px] text-foreground-muted/70">
-          {count} {count === 1 ? 'fixture' : 'fixtures'}
-        </span>
-      )}
-    </div>
-  )
-}
-
-function DateHeader({ dateStr, count }) {
-  const delta = dayDeltaLabel(dateStr)
-  return (
-    <div className="text-[13px] font-bold text-foreground mt-4 mb-2 flex items-baseline gap-2">
-      <span>{formatDateHeader(dateStr)}</span>
-      <span className="text-[11px] font-medium text-foreground-muted">
-        {delta ? `· ${delta} · ` : '· '}
-        {count} {count === 1 ? 'fixture' : 'fixtures'}
-      </span>
-    </div>
-  )
-}
-
-function EmptyState({ children }) {
-  return (
-    <div className="rounded-[12px] border border-white/6 bg-card/60 p-8 text-center text-sm text-foreground-muted">
-      {children}
-    </div>
-  )
+// "Today" spans both UTC and the user's local date so a 23:00 CET kickoff
+// stored as today's UTC date still shows for a US viewer at 17:00 ET
+// (and vice-versa).
+function todayIsoSet() {
+  const now = new Date()
+  const utc = now.toISOString().slice(0, 10)
+  const local =
+    `${now.getFullYear()}-` +
+    `${String(now.getMonth() + 1).padStart(2, '0')}-` +
+    `${String(now.getDate()).padStart(2, '0')}`
+  return new Set([utc, local])
 }
 
 export default function Matches() {
-  const [searchParams, setSearchParams] = useSearchParams()
-  const tab = VALID_TABS.includes(searchParams.get('tab')) ? searchParams.get('tab') : 'today'
-  const country = searchParams.get('country') || null
-  const page = Math.max(1, parseInt(searchParams.get('page') || '1', 10))
-  const timeWindow = VALID_WINDOWS.includes(searchParams.get('window'))
-    ? searchParams.get('window')
-    : '7'
+  const [theme, setTheme] = useCCTheme()
+  const tick = useClock(7)
+  const [tab, setTab] = useState('TODAY')
+  const [leagueCode, setLeagueCode] = useState('ALL')
 
-  const [upcoming, setUpcoming] = useState([])
-  const [results, setResults] = useState([])
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState(null)
+  const upcoming = useUpcomingMatches({ daysAhead: 14 })
+  const recent = useRecentMatches({ daysBack: 7 })
 
-  const updateParams = useCallback((updates) => {
-    setSearchParams((prev) => {
-      const next = new URLSearchParams(prev)
-      Object.entries(updates).forEach(([k, v]) => {
-        if (v == null || v === '' || (k === 'tab' && v === 'today')) next.delete(k)
-        else next.set(k, v)
-      })
-      return next
-    }, { replace: true })
-  }, [setSearchParams])
+  const isRecent = tab === 'RECENT'
+  const source = isRecent ? recent : upcoming
+  const { matches, loading, error } = source
 
-  const setTab = useCallback((t) => updateParams({ tab: t, page: null }), [updateParams])
-  const setCountry = useCallback((c) => updateParams({ country: c, page: null }), [updateParams])
-  const setPage = useCallback((p) => updateParams({ page: p === 1 ? null : p }), [updateParams])
-  const setWindow = useCallback((w) => updateParams({ window: w === '7' ? null : w, page: null }), [updateParams])
+  // Derive the visible slate from the active source + filters.
+  const visible = useMemo(() => {
+    if (!matches) return []
+    return matches.filter((m) => {
+      if (leagueCode !== 'ALL' && m.leagueCode !== leagueCode) return false
+      if (tab === 'TODAY') {
+        if (m.status === 'LIVE') return true
+        const todays = todayIsoSet()
+        return todays.has((m.matchDate || '').slice(0, 10))
+      }
+      if (tab === 'LIVE') return m.status === 'LIVE'
+      if (tab === 'UPCOMING') return m.status === 'UPCOMING'
+      // RECENT — already filtered server-side to completed matches
+      return true
+    })
+  }, [matches, tab, leagueCode])
 
-  // Fetch data based on tab
-  const fetchData = useCallback((showSpinner = true) => {
-    if (showSpinner) {
-      setLoading(true)
-      setError(null)
+  // Rail counts always reflect the broader upcoming pool so the user can see
+  // where the action is without first switching tabs.
+  const railCounts = useMemo(() => {
+    const counts = { ALL: upcoming.matches.length }
+    for (const m of upcoming.matches) {
+      if (!m.leagueCode) continue
+      counts[m.leagueCode] = (counts[m.leagueCode] || 0) + 1
     }
-    if (tab === 'recent') {
-      getResults(null, WINDOW_DAYS[timeWindow] || 7)
-        .then((data) => {
-          setResults(data.matches || [])
-          setError(null)
-          setLoading(false)
-        })
-        .catch((err) => {
-          if (showSpinner) setError(err.message)
-          setLoading(false)
-        })
-    } else {
-      // 60-day window so WC fixtures (kickoff Jun 11) appear on the WC pill
-      // and the "Rest of World" meta-filter, instead of silently empty.
-      getUpcomingMatches(null, 60)
-        .then((data) => {
-          setUpcoming(data.matches || [])
-          setError(null)
-          setLoading(false)
-        })
-        .catch((err) => {
-          if (showSpinner) setError(err.message)
-          setLoading(false)
-        })
-    }
-  }, [tab, timeWindow])
-
-  useEffect(() => {
-    fetchData(true)
-    const interval = setInterval(() => fetchData(false), 60000)
-    return () => clearInterval(interval)
-  }, [fetchData])
-
-  // Apply country filter. The "Rest of World" pill is a meta-filter that
-  // covers any match outside the Big-5 leagues — i.e. USA (MLS), UCL, and
-  // World Cup. Strict equality on every other slug.
-  const REST_SLUGS = ['usa', 'ucl', 'world-cup', 'rest']
-  const filterByCountry = useCallback((arr) => {
-    if (!country) return arr
-    if (country === 'rest') {
-      return arr.filter((m) => REST_SLUGS.includes(matchToCountrySlug(m)))
-    }
-    return arr.filter((m) => matchToCountrySlug(m) === country)
-  }, [country])
-
-  const todayList = useMemo(() => {
-    return filterByCountry(upcoming.filter((m) => isToday(m.match_date)))
-      .sort((a, b) => (a.kickoff_time || '').localeCompare(b.kickoff_time || ''))
-  }, [upcoming, filterByCountry])
-
-  const upcomingList = useMemo(() => {
-    const today = new Date().toLocaleDateString('en-CA')
-    return filterByCountry(upcoming.filter((m) => m.match_date > today))
-      .sort((a, b) => {
-        if (a.match_date !== b.match_date) return a.match_date.localeCompare(b.match_date)
-        return (a.kickoff_time || '').localeCompare(b.kickoff_time || '')
-      })
-  }, [upcoming, filterByCountry])
-
-  const recentList = useMemo(() => {
-    return filterByCountry(results.filter((m) => m.status === 'completed'))
-      .sort((a, b) => b.match_date.localeCompare(a.match_date))
-  }, [results, filterByCountry])
-
-  // Recent KPIs (server returns prediction_accuracy but we want client-side
-  // numbers consistent with whatever filter the user has applied)
-  const evaluated = recentList.filter((m) => m.prediction?.was_correct != null)
-  const correct = evaluated.filter((m) => m.prediction.was_correct).length
-  const wrong = evaluated.length - correct
-  const accuracy = evaluated.length > 0 ? Math.round((correct / evaluated.length) * 100) : null
-
-  // Pagination for upcoming + recent
-  const paginatedList = tab === 'upcoming'
-    ? upcomingList
-    : tab === 'recent' ? recentList : todayList
-  const pageCount = tab === 'today' ? 1 : Math.max(1, Math.ceil(paginatedList.length / PAGE_SIZE))
-  const safePage = Math.min(page, pageCount)
-  const pageStart = (safePage - 1) * PAGE_SIZE
-  const pageItems = tab === 'today'
-    ? paginatedList
-    : paginatedList.slice(pageStart, pageStart + PAGE_SIZE)
-
-  const titleSub = tab === 'today'
-    ? `${formatDateHeader(new Date().toLocaleDateString('en-CA'))} · ${todayList.length} ${todayList.length === 1 ? 'fixture' : 'fixtures'} today`
-    : tab === 'upcoming'
-      ? `Fixtures from tomorrow onwards · ${upcomingList.length} matches`
-      : 'Completed matches with our prediction vs the actual result'
+    return counts
+  }, [upcoming.matches])
 
   return (
-    <div className="max-w-[1180px] mx-auto px-4 sm:px-6 lg:px-12 pt-24 pb-12">
-      {/* page header */}
-      <div className="flex justify-between items-end mb-4 gap-4 flex-wrap">
-        <div>
-          <h1 className="text-[28px] font-extrabold tracking-[-0.02em] mb-1">Matches</h1>
-          <p className="text-[13px] text-foreground-muted">{titleSub}</p>
+    <div className={`cc-root cc-${theme}`} style={{ position: 'relative', minHeight: '100vh', overflowX: 'hidden' }}>
+      <Aurora />
+      <header style={{ position: 'relative', zIndex: 5, display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '18px 32px', borderBottom: '1px solid var(--cc-line-strong)', background: 'rgba(2,6,23,0.5)', backdropFilter: 'blur(14px)' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 18 }}>
+          <Link to="/" style={{ fontFamily: 'var(--cc-serif)', fontStyle: 'italic', fontWeight: 700, fontSize: 22, color: 'var(--cc-gold)', letterSpacing: '-0.02em', textDecoration: 'none' }}>CupCast</Link>
+          <span style={{ color: 'var(--cc-dim)', fontFamily: 'var(--cc-mono)', fontSize: 10, letterSpacing: '0.1em' }}>// MATCHES</span>
         </div>
-        <div role="tablist" aria-label="Match views" className="inline-flex bg-base border border-white/6 rounded-[10px] p-1">
-          <TabButton active={tab === 'today'} onClick={() => setTab('today')}>Today</TabButton>
-          <TabButton active={tab === 'upcoming'} onClick={() => setTab('upcoming')}>Upcoming</TabButton>
-          <TabButton active={tab === 'recent'} onClick={() => setTab('recent')}>Recent</TabButton>
-        </div>
-      </div>
+        <CCNav active="Matches" theme={theme} onTheme={setTheme} />
+        <UpdatedBadge sec={tick} />
+      </header>
 
-      {/* Recent KPI row */}
-      {tab === 'recent' && (
-        <>
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 mb-3.5">
-            <div className="rounded-[10px] border border-white/6 bg-card px-4 py-3">
-              <div className="cc-label">Games Evaluated</div>
-              <div className="text-2xl font-extrabold tracking-[-0.03em] text-tabular">{evaluated.length}</div>
-              <div className="text-[10px] text-foreground-muted mt-0.5">
-                {timeWindow === '7' ? 'Last 7 days' : timeWindow === '30' ? 'Last 30 days' : 'This season'}
-              </div>
-            </div>
-            <div className="rounded-[10px] border border-white/6 bg-card px-4 py-3">
-              <div className="cc-label text-accent-green">Correct</div>
-              <div className="text-2xl font-extrabold tracking-[-0.03em] text-accent-green text-tabular">{correct}</div>
-            </div>
-            <div className="rounded-[10px] border border-white/6 bg-card px-4 py-3">
-              <div className="cc-label text-accent-red">Wrong</div>
-              <div className="text-2xl font-extrabold tracking-[-0.03em] text-accent-red text-tabular">{wrong}</div>
-            </div>
-            <div className="rounded-[10px] border border-accent-gold/30 bg-card px-4 py-3">
-              <div className="cc-label text-accent-gold">Accuracy</div>
-              <div className="text-2xl font-extrabold tracking-[-0.03em] text-accent-gold text-tabular">
-                {accuracy != null ? `${accuracy}%` : '--'}
-              </div>
+      <div style={{ position: 'relative', zIndex: 2, display: 'grid', gridTemplateColumns: '240px 1fr', minHeight: 'calc(100vh - 70px)' }}>
+        {/* Left rail — vertical league tickertape (B) */}
+        <aside style={{ borderRight: '1px solid var(--cc-line-strong)', padding: '18px 0' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 18px', color: 'var(--cc-dim)', fontFamily: 'var(--cc-mono)', fontSize: 10, letterSpacing: '0.14em', borderBottom: '1px solid var(--cc-line)' }}>
+            <span>LEAGUES</span><span className="tnum">{railCounts.ALL || 0}</span>
+          </div>
+          <Ticker />
+          <div style={{ display: 'flex', flexDirection: 'column' }}>
+            {RAIL.map(({ code, label, flag }) => {
+              const active = leagueCode === code
+              const count = railCounts[code] || 0
+              return (
+                <button
+                  key={code}
+                  onClick={() => setLeagueCode(code)}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 10,
+                    padding: '10px 18px',
+                    background: active ? 'rgba(245,158,11,0.07)' : 'transparent',
+                    border: 'none',
+                    borderLeft: active ? '2px solid var(--cc-gold)' : '2px solid transparent',
+                    color: active ? 'var(--cc-text)' : 'var(--cc-muted)',
+                    fontFamily: 'var(--cc-mono)',
+                    fontSize: 12,
+                    cursor: 'pointer',
+                    textAlign: 'left',
+                    letterSpacing: '0.04em',
+                  }}
+                >
+                  <span style={{ width: 14 }}>{flag}</span>
+                  <span style={{ flex: 1 }}>{label}</span>
+                  <span className="tnum" style={{ color: active ? 'var(--cc-gold)' : 'var(--cc-dim)' }}>
+                    {String(count).padStart(2, '0')}
+                  </span>
+                </button>
+              )
+            })}
+          </div>
+        </aside>
+
+        {/* Right — editorial varied-width grid (A) */}
+        <main style={{ padding: '24px 32px 60px' }}>
+          {/* Masthead */}
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', paddingBottom: 14, borderBottom: '1px solid var(--cc-line-strong)' }}>
+            <h1 className="serif" style={{ margin: 0, fontSize: 56, fontStyle: 'italic', fontWeight: 600, letterSpacing: '-0.03em' }}>
+              The slate.
+            </h1>
+            <div style={{ fontFamily: 'var(--cc-mono)', fontSize: 11, color: 'var(--cc-muted)', letterSpacing: '0.08em' }}>
+              <span className="tnum" style={{ color: 'var(--cc-text)' }}>{visible.length}</span> matches
+              {' · '}
+              <span style={{ color: 'var(--cc-green)' }}><span className="cc-live-dot" /> {visible.filter((m) => m.status === 'LIVE').length} LIVE</span>
+              {' · ◆ '}
+              <span className="tnum" style={{ color: 'var(--cc-gold)' }}>{visible.filter((m) => m.valueCall).length}</span>
+              {' VALUE'}
             </div>
           </div>
 
-          {/* Time-window pills */}
-          <div className="flex flex-wrap items-center gap-1.5 mb-3">
-            {[
-              { v: '7', label: 'Last 7 days' },
-              { v: '30', label: 'Last 30 days' },
-              { v: 'season', label: 'This season' },
-            ].map(({ v, label }) => (
+          {/* Tabs */}
+          <div style={{ display: 'flex', gap: 0, marginTop: 14, marginBottom: 22, borderBottom: '1px solid var(--cc-line)' }}>
+            {['TODAY', 'LIVE', 'UPCOMING', 'RECENT'].map((t) => (
               <button
-                key={v}
-                type="button"
-                onClick={() => setWindow(v)}
-                aria-pressed={timeWindow === v}
-                className={`px-3 py-[5px] rounded-full text-xs border transition-colors cursor-pointer ${
-                  timeWindow === v
-                    ? 'bg-accent-gold text-deep border-accent-gold font-semibold'
-                    : 'bg-card text-foreground-muted border-white/8 hover:text-foreground hover:border-white/15'
-                }`}
+                key={t}
+                onClick={() => setTab(t)}
+                style={{
+                  background: 'none',
+                  border: 'none',
+                  padding: '10px 18px',
+                  color: t === tab ? 'var(--cc-gold)' : 'var(--cc-muted)',
+                  borderBottom: t === tab ? '2px solid var(--cc-gold)' : '2px solid transparent',
+                  fontFamily: 'var(--cc-mono)',
+                  fontSize: 11,
+                  letterSpacing: '0.12em',
+                  cursor: 'pointer',
+                  marginBottom: -1,
+                  transition: 'color 200ms',
+                }}
               >
-                {label}
+                {t}
               </button>
             ))}
-            <span aria-hidden className="inline-block w-px h-5 bg-white/10 mx-1" />
           </div>
-        </>
-      )}
 
-      <LeagueFilterBar value={country} onChange={setCountry} />
+          {/* Content area: loading / error / empty / grid */}
+          {loading ? (
+            <SlateSkeleton />
+          ) : error ? (
+            <SlateMessage copy={emptyState('error')} />
+          ) : visible.length === 0 ? (
+            <SlateMessage copy={emptyState('noMatches')} />
+          ) : (
+            <div
+              style={{
+                display: 'grid',
+                gridTemplateColumns: 'repeat(6, 1fr)',
+                gap: 18,
+                transition: 'opacity 200ms',
+              }}
+            >
+              {visible.map((m, i) => {
+                const featured = m.valueCall || m.status === 'LIVE'
+                const span = featured ? 3 : 2
+                return (
+                  <div key={m.id} style={{ gridColumn: `span ${span}` }}>
+                    <MatchCardEd m={m} idx={i} feature={featured} />
+                  </div>
+                )
+              })}
+            </div>
+          )}
+        </main>
+      </div>
+    </div>
+  )
+}
 
-      {/* Loading */}
-      {loading && pageItems.length === 0 && (
-        <div className="flex justify-center py-16">
-          <LoadingSpinner size="lg" label="Loading matches" />
+function SlateMessage({ copy }) {
+  return (
+    <div
+      style={{
+        padding: '60px 0',
+        textAlign: 'center',
+        fontFamily: 'var(--cc-serif)',
+        fontStyle: 'italic',
+        fontSize: 22,
+        lineHeight: 1.4,
+        color: 'var(--cc-muted)',
+        maxWidth: 640,
+        margin: '0 auto',
+      }}
+    >
+      {copy}
+    </div>
+  )
+}
+
+function SlateSkeleton() {
+  // Block silhouettes mirroring the final card layout — no spinners.
+  return (
+    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6, 1fr)', gap: 18 }}>
+      {[3, 2, 2, 3, 2, 3, 2, 2].map((span, i) => (
+        <div
+          key={i}
+          style={{
+            gridColumn: `span ${span}`,
+            background: 'var(--cc-surface)',
+            border: '1px solid var(--cc-line)',
+            borderRadius: 6,
+            height: 168,
+            opacity: 0.55,
+            animation: `cc-rise 600ms ${i * 80}ms cubic-bezier(.2,.7,.2,1) both`,
+          }}
+        />
+      ))}
+    </div>
+  )
+}
+
+function Ticker() {
+  const items = [
+    ['EPL', '+1.4%', 'g'], ['UCL', '+4.2%', 'g'], ['LIGA', '+0.8%', 'g'],
+    ['SERIE', '-0.2%', 'r'], ['BUND', '+5.8%', 'g'], ['LIG1', '+0.5%', 'g'],
+    ['ERED', '-0.4%', 'r'], ['MLS', '+1.1%', 'g'],
+  ]
+  return (
+    <div style={{ borderTop: '1px solid var(--cc-line)', borderBottom: '1px solid var(--cc-line)', overflow: 'hidden', height: 70, position: 'relative', background: 'rgba(245,158,11,0.02)' }}>
+      <div style={{ animation: 'cc-vert 60s linear infinite', display: 'flex', flexDirection: 'column' }}>
+        {[...items, ...items].map(([l, v, c], i) => (
+          <div key={i} style={{ display: 'flex', justifyContent: 'space-between', padding: '4px 18px', fontFamily: 'var(--cc-mono)', fontSize: 11, letterSpacing: '0.08em', color: 'var(--cc-muted)', borderBottom: '1px dashed var(--cc-line)' }}>
+            <span>{l}</span>
+            <span className="tnum" style={{ color: c === 'g' ? 'var(--cc-green)' : 'var(--cc-red)' }}>{v}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function MatchCardEd({ m, idx, feature }) {
+  const isLive = m.status === 'LIVE'
+  const homeScore = isLive || m.status === 'FT' ? m.score?.split('-')[0] : null
+  const awayScore = isLive || m.status === 'FT' ? m.score?.split('-')[1] : null
+  return (
+    <Link to={`/match/${m.id}`} style={{ textDecoration: 'none', color: 'inherit' }}>
+      <div
+        className="cc-rise cc-hover"
+        style={{
+          background: feature ? 'var(--cc-surface)' : 'transparent',
+          border: feature ? '1px solid var(--cc-line)' : 'none',
+          borderTop: feature ? '1px solid var(--cc-line)' : '1px solid var(--cc-line-strong)',
+          borderBottom: feature ? '1px solid var(--cc-line)' : '1px solid var(--cc-line)',
+          borderRadius: feature ? 6 : 0,
+          padding: feature ? 22 : '18px 0',
+          animationDelay: `${idx * 60}ms`,
+          cursor: 'pointer',
+          display: 'block',
+        }}
+      >
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
+          <span style={{ fontFamily: 'var(--cc-mono)', fontSize: 10, color: 'var(--cc-muted)', letterSpacing: '0.1em', textTransform: 'uppercase' }}>
+            {LEAGUE_FLAG[m.league] || '⚽'} {m.league}{m.stage ? ` · ${m.stage}` : ''}
+          </span>
+          {isLive ? (
+            <LiveBadge minute={m.minute || 0} />
+          ) : (
+            <span className="mono tnum" style={{ fontSize: 11, color: 'var(--cc-muted)' }}>{m.kickoff}</span>
+          )}
         </div>
-      )}
 
-      {error && pageItems.length === 0 && (
-        <div className="cc-card p-8 text-center">
-          <p className="text-accent-red">{error}</p>
+        {feature ? (
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr auto 1fr', gap: 14, alignItems: 'center', padding: '8px 0' }}>
+            <TeamBlock short={m.homeShort} crest={m.homeCrest} name={m.home} score={homeScore} winning={isLive && +homeScore > +awayScore} />
+            <span className="serif tnum" style={{ fontSize: 28, fontStyle: 'italic', color: 'var(--cc-muted)', fontWeight: 600, letterSpacing: '-0.03em' }}>
+              {homeScore != null ? '·' : 'vs'}
+            </span>
+            <TeamBlock short={m.awayShort} crest={m.awayCrest} name={m.away} score={awayScore} winning={isLive && +homeScore < +awayScore} alignRight />
+          </div>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            <CompactRow short={m.homeShort} crest={m.homeCrest} name={m.home} prob={m.probH} />
+            <CompactRow short={m.awayShort} crest={m.awayCrest} name={m.away} prob={m.probA} />
+          </div>
+        )}
+
+        <div style={{ marginTop: 14 }}>
+          <ProbBar h={m.probH} d={m.probD} a={m.probA} />
+          <ProbLegend h={m.probH} d={m.probD} a={m.probA} />
         </div>
-      )}
+        <CardFooter pick={m.callShort} conf={m.callConf} value={m.valueCall} edge={m.edge} />
+      </div>
+    </Link>
+  )
+}
 
-      {!loading && !error && (
-        <>
-          {/* Today view: grouped by kickoff time */}
-          {tab === 'today' && (
-            todayList.length === 0 ? (
-              <EmptyState>
-                No matches today{country ? ' for this filter' : ''} — try the Upcoming tab.
-              </EmptyState>
-            ) : (
-              groupBy(todayList, (m) => formatTimeChip(m.kickoff_time, m.match_date))
-                .map(([time, items]) => (
-                  <div key={time}>
-                    <TimeChipDivider label={time} count={items.length} />
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                      {items.map((m) => <MatchRow key={m.id} match={m} variant="today" />)}
-                    </div>
-                  </div>
-                ))
-            )
-          )}
+function TeamBlock({ short, crest, name, score, winning, alignRight }) {
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexDirection: alignRight ? 'row-reverse' : 'row', justifyContent: alignRight ? 'flex-end' : 'flex-start' }}>
+      <Crest short={short} crestUrl={crest} size={36} />
+      <div style={{ textAlign: alignRight ? 'right' : 'left' }}>
+        <div style={{ fontFamily: 'var(--cc-display)', fontSize: 17, fontWeight: winning ? 700 : 500, letterSpacing: '-0.01em' }}>{name}</div>
+        {score != null ? (
+          <div className="serif tnum" style={{ fontSize: 28, fontStyle: 'italic', fontWeight: 600, color: 'var(--cc-text)', letterSpacing: '-0.02em', lineHeight: 1, marginTop: 2 }}>{score}</div>
+        ) : null}
+      </div>
+    </div>
+  )
+}
 
-          {/* Upcoming view: paginated, grouped by date inside the page */}
-          {tab === 'upcoming' && (
-            upcomingList.length === 0 ? (
-              <EmptyState>
-                No upcoming matches{country ? ' for this filter' : ''}.
-              </EmptyState>
-            ) : (
-              <>
-                {groupBy(pageItems, (m) => m.match_date).map(([date, items]) => (
-                  <div key={date}>
-                    <DateHeader dateStr={date} count={items.length} />
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                      {items.map((m) => <MatchRow key={m.id} match={m} variant="upcoming" />)}
-                    </div>
-                  </div>
-                ))}
-                <Pagination page={safePage} pageCount={pageCount} onPageChange={setPage} />
-                {pageCount > 1 && (
-                  <div className="text-center text-[11px] text-foreground-muted/70 mt-1.5">
-                    Showing {pageStart + 1}–{Math.min(pageStart + PAGE_SIZE, upcomingList.length)} of {upcomingList.length} · {PAGE_SIZE} per page
-                  </div>
-                )}
-              </>
-            )
-          )}
-
-          {/* Recent view: flat paginated list */}
-          {tab === 'recent' && (
-            recentList.length === 0 ? (
-              <EmptyState>
-                No completed matches in this window{country ? ' for this filter' : ''}.
-              </EmptyState>
-            ) : (
-              <>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                  {pageItems.map((m) => <MatchRow key={m.id} match={m} variant="recent" />)}
-                </div>
-                <Pagination page={safePage} pageCount={pageCount} onPageChange={setPage} />
-                {pageCount > 1 && (
-                  <div className="text-center text-[11px] text-foreground-muted/70 mt-1.5">
-                    Showing {pageStart + 1}–{Math.min(pageStart + PAGE_SIZE, recentList.length)} of {recentList.length} · {PAGE_SIZE} per page
-                  </div>
-                )}
-              </>
-            )
-          )}
-        </>
-      )}
+function CompactRow({ short, crest, name, prob }) {
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+      <Crest short={short} crestUrl={crest} size={22} />
+      <div style={{ flex: 1, fontFamily: 'var(--cc-display)', fontSize: 14, fontWeight: 500 }}>{name}</div>
+      <div className="mono tnum" style={{ fontSize: 11, color: 'var(--cc-muted)' }}>{prob}%</div>
     </div>
   )
 }

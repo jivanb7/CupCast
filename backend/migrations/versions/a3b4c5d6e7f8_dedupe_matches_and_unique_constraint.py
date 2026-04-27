@@ -66,6 +66,13 @@ _MIGRATION_SOURCE = 'dedupe-matches-2026-04-25'
 def upgrade() -> None:
     conn = op.get_bind()
 
+    # SQLite (local dev) lacks ARRAY_AGG / pg_constraint and the production
+    # dedup work this migration addresses doesn't exist there. No-op so the
+    # local chain can continue to b8c9d0e1f2a3.
+    if conn.dialect.name == "sqlite":
+        print(f"[{revision}] sqlite dialect — skipping Postgres-only dedup work")
+        return
+
     # ------------------------------------------------------------------
     # 1) Merge "DC United" (id 408) into "D.C. United" (id 406)
     # ------------------------------------------------------------------
