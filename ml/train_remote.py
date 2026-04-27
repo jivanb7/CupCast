@@ -394,19 +394,33 @@ def train_catboost_team_id(df, train_mask, val_mask, test_mask, feature_cols,
     Returns (model, predict_fn, val_metrics, test_metrics_or_None).
     The predict_fn closure captures the augmented column order so callers
     in compute_edge / regenerate_predictions can score new matches.
+
+    Imputation rule matches `time_split`: NaN is filled using TRAIN medians
+    only. Earlier this routine computed `sub[feature_cols].median()` per
+    split — val/test ended up filled with their own medians, leaking
+    distribution info that the model could exploit. Switching to train-only
+    medians lines this strategy up with every other variant in the run so
+    the promotion gate compares apples to apples.
     """
     cat_cols = ["home_team", "away_team"]
     all_cols = list(feature_cols) + cat_cols
+
+    # Pre-compute train-only medians once. NaN → 0 if a column is entirely
+    # missing on train (rare but possible for the new has_* flags if the
+    # parquets weren't refreshed before training).
+    _train_numeric = (
+        df.loc[train_mask, feature_cols].apply(pd.to_numeric, errors="coerce")
+    )
+    _train_medians = _train_numeric.median(numeric_only=True)
+    _train_medians = _train_medians.where(_train_medians.notna(), 0.0)
 
     def _prep(mask):
         sub = df.loc[mask, all_cols].copy()
         for c in cat_cols:
             sub[c] = sub[c].astype(str).fillna("UNK")
-        # Numeric NaN → median; CatBoost handles this internally too but
-        # being explicit keeps logs clean.
         for c in feature_cols:
             sub[c] = pd.to_numeric(sub[c], errors="coerce")
-        sub[feature_cols] = sub[feature_cols].fillna(sub[feature_cols].median(numeric_only=True))
+        sub[feature_cols] = sub[feature_cols].fillna(_train_medians)
         return sub
 
     Xtr = _prep(train_mask)

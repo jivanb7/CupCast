@@ -607,6 +607,17 @@ def generate_batch_predictions(db) -> int:
             # `numeric_features_in_` for the upstream feature lookup but
             # also accept team-name strings via predict_proba(DataFrame).
             # Detect that and feed home/away team alongside the numeric row.
+            #
+            # Schema drift note: the feature builder now emits 90 columns
+            # (87 legacy + has_odds, has_injury_data, has_availability_data).
+            # Models trained before that change expose only their original
+            # 87 in `feature_names_in_`, so the `available = [f for f in
+            # numeric_names if f in feature_row.index]` filter silently
+            # drops the new indicator columns. That's intentional: the old
+            # model never learned weights for them and feeding three extra
+            # columns would crash the predict_proba call. Once a 90-column
+            # model is promoted, this branch picks them up automatically
+            # because the new model's `feature_names_in_` lists all 90.
             numeric_names = list(getattr(
                 club_model, "numeric_features_in_",
                 getattr(club_model, "feature_names_in_", []),
