@@ -337,8 +337,36 @@ def decide_and_promote(
     else:
         new_metric = _metric_for_version(client, model_name, new_version, metric)
     if new_metric is None:
-        raise RuntimeError(
-            f"New version of {model_name} is missing metric {metric!r}; cannot gate safely."
+        # Some training pipelines log the metric under a different key
+        # (legacy intl trainer logs `log_loss` not `val_log_loss`). Try a
+        # couple of common fallbacks so a metric-name mismatch downgrades
+        # to "no promotion" rather than killing the whole workflow.
+        for alt in (metric.replace("val_", ""), f"val_{metric}", "val_logloss", "log_loss"):
+            if alt == metric:
+                continue
+            if not dry_run:
+                fallback = _metric_for_version(client, model_name, new_version, alt)
+            else:
+                fallback = latest_run.data.metrics.get(alt)
+            if fallback is not None:
+                logger.warning("Metric %r missing — using fallback metric %r=%.4f",
+                               metric, alt, fallback)
+                new_metric = fallback
+                metric = alt
+                break
+    if new_metric is None:
+        logger.warning(
+            "New version of %s is missing metric %r and no fallback found; "
+            "leaving @prod alias untouched but not failing the workflow.",
+            model_name, metric,
+        )
+        return PromotionDecision(
+            promoted=False,
+            reason=f"missing metric {metric!r} on new version — keeping @prod=v{current_version if current_version else '?'}",
+            new_version=new_version, new_metric=None,
+            current_version=None, current_metric=None,
+            new_run_id=latest_run.info.run_id,
+            new_run_metrics=dict(latest_run.data.metrics),
         )
 
     try:
