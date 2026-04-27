@@ -107,12 +107,12 @@ export default function About() {
             <div>
               <div style={{display:'grid', gridTemplateColumns:'repeat(2, 1fr)', gap: 30}}>
                 {[
-                  ['Editor', 'A.M. Halász', 'Former data desk, sports broadsheet'],
-                  ['Head of Models', 'P. Okafor', 'PhD stats · 11 years quant trading'],
-                  ['Calibration Lead', 'I. Tanaka-Reyes', 'Forecast verification · IPCC alum'],
-                  ['Live Match Editor', 'S. Brennan', 'Tactics analyst · UEFA B'],
-                  ['Engineering', 'M. Lindqvist', 'Streaming data · ex-news terminal'],
-                  ['Design', 'R. Vance', 'Editorial design · type history'],
+                  ['Editor', 'Noam Fein', 'Data ingestion · editorial layout'],
+                  ['Head of Models', 'Rodrigo Cuadra', 'ML pipelines · MLflow · model selection'],
+                  ['Calibration Lead', 'Jivan Bal', 'Probability calibration · infra reliability'],
+                  ['Live Match Editor', 'Jivan Bal', 'Live scoreboard · scheduler · scores ops'],
+                  ['Engineering', 'Rodrigo Cuadra', 'Backend ML services · training pipeline'],
+                  ['Design', 'Noam Fein', 'Editorial system · typography · component kit'],
                 ].map(([r, n, sub], i) => (
                   <div key={i} style={{paddingBottom: 18, borderBottom:'1px solid var(--cc-line)'}}>
                     <div className="cc-eyebrow">{r}</div>
@@ -135,7 +135,7 @@ export default function About() {
             <span style={{color:'var(--cc-gold)'}}>"</span> If the model has nothing useful to say, it will say nothing. The hardest line we hold is the line at which a confident-looking number has not earned its confidence yet. <span style={{color:'var(--cc-gold)'}}>"</span>
           </div>
           <div style={{marginTop: 24, fontFamily:'var(--cc-mono)', fontSize: 11, color:'var(--cc-muted)', letterSpacing:'0.16em'}}>
-            — A.M. HALÁSZ, EDITOR · ISSUE 001 · 2022
+            — Claude Code · 2026
           </div>
         </section>
 
