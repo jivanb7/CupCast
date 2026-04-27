@@ -77,6 +77,97 @@ class PromotionDecision:
     new_metric: Optional[float]
     current_version: Optional[int]
     current_metric: Optional[float]
+    new_run_id: Optional[str] = None
+    new_run_metrics: Optional[dict] = None
+    db_label: Optional[str] = None  # set after _record_promotion_in_db
+
+
+# Map MLflow model-type → backend model_registry.model_name. Keep these
+# string keys in sync with backend/api/model_perf.py which queries by
+# model_name = "club_model".
+DB_MODEL_NAME_BY_TYPE = {
+    "club": "club_model",
+    "intl": "intl_model",
+}
+
+
+def _bump_version(current: Optional[str]) -> str:
+    """v0.1.0-dev → v0.2.0;  v0.2.0 → v0.3.0;  None or unparseable → v0.2.0.
+
+    Bumps minor, resets patch. Major stays at 0 until somebody intentionally
+    cuts a v1.0.0 (e.g. when the model architecture changes meaningfully).
+    """
+    import re
+    if not current or current == "v0.1.0-dev":
+        return "v0.2.0"
+    m = re.match(r"^v?(\d+)\.(\d+)\.(\d+)", current)
+    if not m:
+        return "v0.2.0"
+    major, minor, _patch = int(m.group(1)), int(m.group(2)), int(m.group(3))
+    return f"v{major}.{minor + 1}.0"
+
+
+def _record_promotion_in_db(
+    db_model_name: str,
+    new_run_id: str,
+    metrics: dict,
+) -> Optional[str]:
+    """Best-effort write to the model_registry DB table when the alias
+    flips. Returns the bumped version label if the write succeeded, None
+    otherwise. Failures here do NOT roll back the MLflow alias flip — the
+    served model is the source of truth, the DB row is just metadata for
+    the /model performance page header.
+    """
+    db_url = os.environ.get("DATABASE_URL")
+    if not db_url:
+        logger.warning("DATABASE_URL not set; skipping model_registry write")
+        return None
+    try:
+        from sqlalchemy import create_engine, text
+        engine = create_engine(db_url, pool_pre_ping=True)
+        with engine.begin() as conn:
+            current = conn.execute(
+                text(
+                    "SELECT model_version FROM model_registry "
+                    "WHERE model_name = :n AND is_production = TRUE "
+                    "ORDER BY trained_at DESC NULLS LAST, id DESC LIMIT 1"
+                ),
+                {"n": db_model_name},
+            ).first()
+            new_label = _bump_version(current[0] if current else None)
+
+            # Demote any prior production rows for this model_name.
+            conn.execute(
+                text("UPDATE model_registry SET is_production = FALSE WHERE model_name = :n"),
+                {"n": db_model_name},
+            )
+            # Insert the new row.
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO model_registry
+                        (model_name, model_version, mlflow_run_id,
+                         accuracy, f1_macro, log_loss,
+                         is_production, trained_at)
+                    VALUES
+                        (:name, :ver, :run_id, :acc, :f1, :ll, TRUE, NOW())
+                    """
+                ),
+                {
+                    "name": db_model_name,
+                    "ver": new_label,
+                    "run_id": new_run_id,
+                    "acc": metrics.get("val_accuracy"),
+                    "f1": metrics.get("val_f1_macro"),
+                    "ll": metrics.get("val_log_loss"),
+                },
+            )
+        logger.info("Wrote model_registry row: %s = %s (run_id=%s)",
+                    db_model_name, new_label, new_run_id[:8] if new_run_id else "?")
+        return new_label
+    except Exception:
+        logger.exception("model_registry write failed (alias still flipped, served model is correct)")
+        return None
 
 
 def _find_latest_training_logged_model(client: MlflowClient, experiment_name: str):
@@ -221,11 +312,25 @@ def decide_and_promote(
         current_metric = None
 
     # 4. Decide.
+    new_run_id = latest_run.info.run_id
+    new_run_metrics = dict(latest_run.data.metrics)
+    db_model_name = DB_MODEL_NAME_BY_TYPE.get(model_type)
+
+    def _build_decision(promoted: bool, reason: str) -> PromotionDecision:
+        db_label = None
+        if promoted and not dry_run and db_model_name:
+            db_label = _record_promotion_in_db(db_model_name, new_run_id, new_run_metrics)
+        return PromotionDecision(
+            promoted, reason, new_version, new_metric,
+            current_version, current_metric,
+            new_run_id=new_run_id, new_run_metrics=new_run_metrics, db_label=db_label,
+        )
+
     if current_metric is None:
         reason = f"no existing @prod alias — promoting v{new_version} as first prod"
         if not dry_run:
             client.set_registered_model_alias(name=model_name, alias="prod", version=str(new_version))
-        return PromotionDecision(True, reason, new_version, new_metric, current_version, current_metric)
+        return _build_decision(True, reason)
 
     # Lower log-loss is better. Require new <= current * (1 - margin).
     threshold = current_metric * (1.0 - margin)
@@ -236,13 +341,13 @@ def decide_and_promote(
         )
         if not dry_run:
             client.set_registered_model_alias(name=model_name, alias="prod", version=str(new_version))
-        return PromotionDecision(True, reason, new_version, new_metric, current_version, current_metric)
+        return _build_decision(True, reason)
 
     reason = (
         f"new {metric}={new_metric:.4f} > {threshold:.4f} "
         f"(current={current_metric:.4f}, margin={margin:.1%}) — keeping @prod=v{current_version}"
     )
-    return PromotionDecision(False, reason, new_version, new_metric, current_version, current_metric)
+    return _build_decision(False, reason)
 
 
 def main() -> int:
@@ -281,12 +386,15 @@ def main() -> int:
 
     tag = "PROMOTED" if decision.promoted else "KEPT"
     logger.info("[%s] %s", tag, decision.reason)
+    if decision.promoted and decision.db_label:
+        logger.info("model_registry now serves %s as %s", args.model_type, decision.db_label)
     # Emit a concise machine-readable summary for CI log searchability.
     print(
         f"promotion_result model={args.model_type} "
         f"promoted={decision.promoted} "
         f"new_version={decision.new_version} new_{args.metric}={decision.new_metric} "
-        f"current_version={decision.current_version} current_{args.metric}={decision.current_metric}"
+        f"current_version={decision.current_version} current_{args.metric}={decision.current_metric} "
+        f"db_label={decision.db_label or 'none'}"
     )
     return 0
 
