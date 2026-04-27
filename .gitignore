@@ -74,3 +74,6 @@ infra/
 
 # Design reference assets — ephemeral; not part of the production codebase
 design_handoff_cupcast/
+
+# Claude Code internal scratch state
+.claude/scheduled_tasks.lock
