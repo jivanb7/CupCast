@@ -23,9 +23,41 @@ import { pickFor, emptyState } from '../lib/reasons'
 import { tzAbbreviation } from '../lib/time'
 
 
+// League-tier ranking for marquee selection. Top-tier clubs (UCL + Big Five)
+// outrank everything else so the front door isn't a National League fixture.
+// Within a tier we still sort by valueCall → edge → confidence so the chosen
+// match is the most compelling one in the strongest available bracket.
+const LEAGUE_TIER = {
+  ucl: 1, ucl_qual: 1,
+  epl: 1, laliga: 1, seriea: 1, bundesliga: 1, ligue1: 1,
+  uel: 2, ueco: 2,
+  championship: 2, eredivisie: 2, primeira: 2, liga_portugal: 2,
+  worldcup: 1, wc26: 1,
+  league_one: 3, mls: 3, liga_mx: 3,
+  league_two: 4,
+  national_league: 5,
+}
+const LEAGUE_LABEL_TIER = {
+  UCL: 1, EPL: 1, 'La Liga': 1, 'Serie A': 1, Bundesliga: 1, 'Ligue 1': 1,
+  UEL: 2, 'EFL Champ': 2, Eredivisie: 2,
+  'EFL L1': 3, MLS: 3, 'Liga MX': 3,
+  'EFL L2': 4,
+  'Nat Lge': 5,
+}
+
+function tierFor(m) {
+  const code = (m?.leagueCode || '').toLowerCase()
+  if (LEAGUE_TIER[code] != null) return LEAGUE_TIER[code]
+  if (m?.league && LEAGUE_LABEL_TIER[m.league] != null) return LEAGUE_LABEL_TIER[m.league]
+  return 9
+}
+
 function pickMarquee(matches) {
   if (!matches || matches.length === 0) return null
   const ranked = [...matches].sort((a, b) => {
+    const ta = tierFor(a)
+    const tb = tierFor(b)
+    if (ta !== tb) return ta - tb
     if (b.valueCall !== a.valueCall) return b.valueCall ? 1 : -1
     if (b.edge !== a.edge) return b.edge - a.edge
     return b.callConf - a.callConf

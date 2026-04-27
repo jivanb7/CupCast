@@ -79,8 +79,18 @@ DB_TO_ML_LEAGUE = {
     "ligue1": "F1", "ucl": "UCL",
 }
 
-# Top 5 leagues use the specialist model
-TOP5_ML_CODES = {"E0", "SP1", "I1", "D1", "F1", "UCL"}
+# Top-5 specialist routing is currently disabled. The registered
+# `cupcast-club-top5-model` is a stale bootstrap from Mar 2026 — plain
+# RandomForest trained on 76 features, missing the Elo / league-rank /
+# season-PPG / key-player-availability features the general `cupcast-club-
+# model` v7 (87 features, CalibratedClassifierCV+RF) consumes. Routing big-
+# club matches like Bayern–Heidenheim through that stale model produces
+# near-flat 33/33/33 distributions that don't reflect the team-strength
+# signal we now train on. Until the top-5 specialist is retrained on the
+# current feature pipeline, route every club match through the general
+# model. Re-enable this set (or replace with retrained codes) once the
+# top-5 model is rebuilt.
+TOP5_ML_CODES: set[str] = set()
 
 # Module-level model cache
 _club_model = None
