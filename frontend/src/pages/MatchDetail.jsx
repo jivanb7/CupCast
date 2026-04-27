@@ -1,561 +1,539 @@
-import { useState, useEffect, useCallback } from 'react'
-import { useParams, Link } from 'react-router-dom'
-import { ArrowLeft } from 'lucide-react'
-import { getMatch } from '../services/api'
-import TeamCrest from '../components/match/TeamCrest'
-import FormBadge from '../components/match/FormBadge'
-import LoadingSpinner from '../components/ui/LoadingSpinner'
+// Match Detail — Direction C
+// Editorial scroll-driven page. Score hero → probability split → form & h2h
+// → key stats grid → model "why" pull-quote bullets.
+//
+// All data sourced from `useMatchDetail(matchId)` which returns the
+// CC-adapted match plus form / h2h / shots / corners / explanationText
+// forwarded from the API. The page renders only what the backend supplies
+// — fabricated stats (xG, possession, PPDA) are deliberately omitted.
 
-/**
- * MatchDetail — match-detail-v1 visual style.
- *
- * Preserves the adaptive polling behaviour of the previous version:
- *   live      → 15s
- *   completed → 300s (occasional refresh in case ratings settle)
- *   else      → 60s
- */
-
-function formatLongDate(dateStr) {
-  if (!dateStr) return ''
-  const d = new Date(dateStr + 'T00:00:00')
-  return d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })
-}
-
-function formatKickoff(utcTime, dateStr) {
-  if (!utcTime || utcTime === 'nan' || utcTime === 'NaN') return null
-  const d = dateStr || new Date().toISOString().slice(0, 10)
-  const dt = new Date(`${d}T${utcTime}:00Z`)
-  if (isNaN(dt.getTime())) return null
-  return dt.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true, timeZoneName: 'short' })
-}
-
-function buildKickoffDate(match) {
-  if (!match?.match_date) return null
-  const time = match.kickoff_time && match.kickoff_time !== 'nan' && match.kickoff_time !== 'NaN'
-    ? match.kickoff_time : '12:00'
-  const dt = new Date(`${match.match_date}T${time}:00Z`)
-  return isNaN(dt.getTime()) ? null : dt
-}
-
-function formatCountdown(ms) {
-  if (ms <= 0) return null
-  const totalMin = Math.floor(ms / 60000)
-  const days = Math.floor(totalMin / (60 * 24))
-  const hours = Math.floor((totalMin % (60 * 24)) / 60)
-  const mins = totalMin % 60
-  if (days >= 1) return `kicks in ${days}d ${hours}h`
-  if (hours >= 1) return `kicks in ${hours}h ${mins}m`
-  return `kicks in ${mins}m`
-}
-
-function FormStrip({ results }) {
-  if (!results?.length) return null
-  return <FormBadge results={results} />
-}
-
-function H2HRow({ row }) {
-  // Determine winner (with team_id we can colour the winning side)
-  let winner = null
-  if (row.home_goals != null && row.away_goals != null) {
-    if (row.home_goals > row.away_goals) winner = 'home'
-    else if (row.away_goals > row.home_goals) winner = 'away'
-    else winner = 'draw'
-  }
-
-  return (
-    <div className="grid [grid-template-columns:1fr_70px_1fr_90px] items-center py-2.5 border-b border-white/5 last:border-0 text-xs gap-2">
-      <span className={`text-right font-semibold truncate ${winner === 'home' ? 'text-accent-green' : 'text-foreground'}`}>
-        {row.home_team_name}
-      </span>
-      <span className={`text-center text-sm font-extrabold text-tabular ${
-        winner === 'draw' ? 'text-accent-amber'
-        : winner === 'home' || winner === 'away' ? 'text-foreground'
-        : 'text-foreground-muted'
-      }`}>
-        {row.home_goals != null && row.away_goals != null
-          ? `${row.home_goals} – ${row.away_goals}` : '–'}
-      </span>
-      <span className={`text-left font-semibold truncate ${winner === 'away' ? 'text-accent-green' : 'text-foreground'}`}>
-        {row.away_team_name}
-      </span>
-      <span className="text-right text-foreground-muted text-[11px]">
-        {formatLongDate(row.match_date)}
-      </span>
-    </div>
-  )
-}
-
-function FormList({ form, label, match, isHome }) {
-  if (!form) {
-    return (
-      <div className="rounded-[14px] border border-white/6 bg-card px-6 py-5">
-        <div className="text-[15px] font-bold mb-3.5 tracking-[-0.01em]">Last 5 — {label}</div>
-        <p className="text-sm text-foreground-muted">No form data available.</p>
-      </div>
-    )
-  }
-  const winRate = Math.round((form.win_rate_5 ?? 0) * 100)
-  const last5 = form.last_5_results || []
-  const wCount = last5.filter((r) => r === 'W').length
-  const dCount = last5.filter((r) => r === 'D').length
-  const lCount = last5.filter((r) => r === 'L').length
-
-  return (
-    <div className="rounded-[14px] border border-white/6 bg-card px-6 py-5">
-      <div className="flex items-center justify-between mb-3.5">
-        <div className="text-[15px] font-bold tracking-[-0.01em]">Last 5 — {label}</div>
-      </div>
-      <div className="flex items-center gap-2 mb-2.5 text-[13px] font-bold">
-        <TeamCrest
-          name={form.team_name}
-          crestUrl={isHome ? match.home_team_crest : match.away_team_crest}
-          countryCode={isHome ? match.home_team_country_code : match.away_team_country_code}
-          size="xs"
-        />
-        <span>{form.team_name}</span>
-        <span className="ml-auto text-[11px] text-foreground-muted font-medium">
-          {wCount}W · {dCount}D · {lCount}L
-        </span>
-      </div>
-      <div className="flex flex-col gap-2 mt-1.5">
-        <FormStrip results={last5} />
-        <div className="text-[11px] text-foreground-muted">
-          Win rate <span className={`font-semibold text-tabular ${
-            winRate >= 60 ? 'text-accent-green' : winRate >= 40 ? 'text-accent-amber' : 'text-accent-red'
-          }`}>{winRate}%</span>
-          {' '}· Scored <span className="text-foreground text-tabular">
-            {form.goals_scored_avg_5 != null ? `${form.goals_scored_avg_5.toFixed(1)}` : '--'}
-          </span>/g
-          {' '}· Conceded <span className="text-foreground text-tabular">
-            {form.goals_conceded_avg_5 != null ? `${form.goals_conceded_avg_5.toFixed(1)}` : '--'}
-          </span>/g
-        </div>
-      </div>
-    </div>
-  )
-}
+import Aurora from '../components/cc/Aurora'
+import Crest from '../components/cc/Crest'
+import Eyebrow from '../components/cc/Eyebrow'
+import CCNav from '../components/cc/CCNav'
+import UpdatedBadge from '../components/cc/UpdatedBadge'
+import SplitWords from '../components/cc/SplitWords'
+import useCountUp from '../hooks/useCountUp'
+import useCCTheme from '../hooks/useCCTheme'
+import useClock from '../hooks/useClock'
+import useInView from '../hooks/useInView'
+import useMatchDetail from '../hooks/useMatchDetail'
+import { pickFor, emptyState } from '../lib/reasons'
+import { Link, useParams } from 'react-router-dom'
 
 export default function MatchDetail() {
+  const [theme, setTheme] = useCCTheme();
+  const tick = useClock(8);
+
   const { matchId } = useParams()
-  const [match, setMatch] = useState(null)
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState(null)
-  const [now, setNow] = useState(() => Date.now())
-  const [refreshedAt, setRefreshedAt] = useState(null)
-
-  const fetchMatch = useCallback((showSpinner = true) => {
-    if (showSpinner) {
-      setLoading(true)
-      setError(null)
-    }
-    getMatch(matchId)
-      .then((data) => {
-        setMatch(data)
-        setRefreshedAt(Date.now())
-        setError(null)
-      })
-      .catch((err) => {
-        if (showSpinner) setError(err.message)
-      })
-      .finally(() => setLoading(false))
-  }, [matchId])
-
-  useEffect(() => {
-    fetchMatch(true)
-  }, [fetchMatch])
-
-  useEffect(() => {
-    if (!match) return undefined
-    const pollMs =
-      match.status === 'live' ? 15000
-      : match.status === 'completed' ? 300000
-      : 60000
-    const interval = setInterval(() => fetchMatch(false), pollMs)
-    return () => clearInterval(interval)
-  }, [match?.status, fetchMatch])
-
-  // 60s tick for the kickoff countdown + "refreshed Xs ago"
-  useEffect(() => {
-    const interval = setInterval(() => setNow(Date.now()), 30000)
-    return () => clearInterval(interval)
-  }, [])
-
-  if (loading && !match) {
-    return (
-      <div className="flex justify-center pt-32">
-        <LoadingSpinner size="lg" label="Loading match" />
-      </div>
-    )
-  }
-  if (error && !match) {
-    return (
-      <div className="max-w-4xl mx-auto px-4 pt-24">
-        <div className="cc-card p-8 text-center">
-          <p className="text-accent-red">{error}</p>
-        </div>
-      </div>
-    )
-  }
-  if (!match) return null
-
-  const pred = match.prediction
-  const isLive = match.status === 'live'
-  const isCompleted = match.status === 'completed'
-  const isScheduled = !isLive && !isCompleted
-
-  const kickoffDate = buildKickoffDate(match)
-  const countdown = isScheduled && kickoffDate ? formatCountdown(kickoffDate.getTime() - now) : null
-  const kickoffStr = formatKickoff(match.kickoff_time, match.match_date)
-
-  const homePct = pred ? Math.round((pred.prob_home_win ?? 0) * 100) : 0
-  const drawPct = pred ? Math.round((pred.prob_draw ?? 0) * 100) : 0
-  const awayPct = pred ? Math.round((pred.prob_away_win ?? 0) * 100) : 0
-  const confidencePct = pred?.confidence != null ? Math.round(pred.confidence * 100) : null
-
-  const predictedTeamName = pred?.predicted_result === 'H'
-    ? match.home_team_name
-    : pred?.predicted_result === 'A' ? match.away_team_name
-    : 'Draw'
-
-  const refreshedAgo = refreshedAt ? Math.max(0, Math.round((now - refreshedAt) / 1000)) : null
+  const { match: m, loading, error } = useMatchDetail(matchId)
 
   return (
-    <div className="max-w-[1180px] mx-auto px-4 sm:px-6 lg:px-12 pt-24 pb-12">
+    <div className={`cc-root cc-${theme}`} style={{position:'relative', minHeight:'100vh', overflowX:'hidden'}}>
+      <Aurora/>
+      <FloatingHeader theme={theme} setTheme={setTheme} tick={tick} active="Match"/>
+
+      <div style={{position:'relative', zIndex: 2, paddingTop: 96, paddingBottom: 80}}>
+        {loading && <MDLoading/>}
+        {!loading && error && <MDMessage copy={emptyState('error')}/>}
+        {!loading && !error && !m && <MDMessage copy={emptyState('noMatches')}/>}
+        {!loading && !error && m && (
+          <>
+            <MDHero m={m}/>
+            <MDDivider label="② Probability split"/>
+            <MDProbSplit m={m}/>
+            <MDDivider label="③ Form & head-to-head"/>
+            <MDForm m={m}/>
+            <MDDivider label="④ Why we called it"/>
+            <MDWhy m={m}/>
+            <MDDivider label="⑤ Key stats"/>
+            <MDStats m={m}/>
+          </>
+        )}
+        <MDFooter/>
+      </div>
+    </div>
+  );
+}
+
+function FloatingHeader({ theme, setTheme, tick, active }) {
+  return (
+    <header style={{position:'fixed', top: 18, left: 0, right: 0, zIndex: 50, display:'flex', justifyContent:'center', pointerEvents:'none'}}>
+      <div style={{
+        pointerEvents:'auto', display:'flex', alignItems:'center', gap: 18,
+        padding:'10px 18px',
+        background: theme==='night' ? 'rgba(2,6,23,0.6)' : 'rgba(241,237,229,0.75)',
+        backdropFilter:'blur(14px)',
+        border:'1px solid var(--cc-line-strong)', borderRadius: 999,
+      }}>
+        <Link to="/" style={{fontFamily:'var(--cc-serif)', fontStyle:'italic', fontWeight:700, fontSize: 16, color:'var(--cc-gold)', letterSpacing:'-0.02em', textDecoration:'none'}}>CupCast</Link>
+        <span style={{color:'var(--cc-dim)'}}>·</span>
+        <CCNav active={active} theme={theme} onTheme={setTheme} compact/>
+        <span style={{color:'var(--cc-dim)'}}>·</span>
+        <UpdatedBadge sec={tick}/>
+      </div>
+    </header>
+  );
+}
+
+// ── Loading / error ────────────────────────────────────────────────────
+
+function MDLoading() {
+  return (
+    <section style={{maxWidth: 1080, margin:'0 auto', padding:'0 40px 60px'}}>
+      <div style={{display:'flex', alignItems:'center', gap: 14, marginBottom: 32, fontFamily:'var(--cc-mono)', fontSize: 11, letterSpacing:'0.16em', color:'var(--cc-muted)', textTransform:'uppercase'}}>
+        <span style={{color:'var(--cc-gold)'}}>① The Match</span>
+        <span style={{flex: 1, height: 1, background:'var(--cc-line)'}}/>
+        <span style={{color:'var(--cc-dim)'}}>Loading…</span>
+      </div>
+      <div style={{
+        display:'grid', gridTemplateColumns:'1fr auto 1fr', gap: 36,
+        alignItems:'center', padding:'40px 0',
+      }}>
+        <div style={{textAlign:'right'}}>
+          <SkeletonBlock w={88} h={88} radius={12} style={{display:'inline-block'}}/>
+          <SkeletonBlock w={280} h={56} style={{margin:'18px 0 0 auto'}}/>
+          <SkeletonBlock w={180} h={11} style={{margin:'18px 0 0 auto'}}/>
+        </div>
+        <div style={{textAlign:'center'}}>
+          <SkeletonBlock w={120} h={120}/>
+        </div>
+        <div style={{textAlign:'left'}}>
+          <SkeletonBlock w={88} h={88} radius={12}/>
+          <SkeletonBlock w={280} h={56} style={{marginTop: 18}}/>
+          <SkeletonBlock w={180} h={11} style={{marginTop: 18}}/>
+        </div>
+      </div>
+      <SkeletonBlock w="100%" h={56} style={{marginTop: 24, maxWidth: 720, marginLeft:'auto', marginRight:'auto'}}/>
+    </section>
+  );
+}
+
+function SkeletonBlock({ w, h, radius = 6, style }) {
+  return (
+    <div
+      className="cc-pulse"
+      style={{
+        width: w, height: h, borderRadius: radius,
+        background: 'var(--cc-line)',
+        ...style,
+      }}
+    />
+  );
+}
+
+function MDMessage({ copy }) {
+  return (
+    <section style={{maxWidth: 720, margin:'0 auto', padding:'80px 40px', textAlign:'center'}}>
+      <div className="cc-eyebrow" style={{color:'var(--cc-gold)'}}>◆ The Match</div>
+      <p style={{
+        marginTop: 16,
+        fontFamily:'var(--cc-serif)', fontStyle:'italic', fontSize: 28, lineHeight: 1.4,
+        color:'var(--cc-muted)', textWrap:'balance',
+      }}>
+        {copy}
+      </p>
       <Link
         to="/matches"
-        className="inline-flex items-center gap-1.5 text-sm text-foreground-muted hover:text-accent-gold transition-colors mb-4"
+        style={{
+          display:'inline-block', marginTop: 28,
+          fontFamily:'var(--cc-mono)', fontSize: 11, letterSpacing:'0.12em', textTransform:'uppercase',
+          color:'var(--cc-gold)', textDecoration:'none',
+          borderBottom:'1px solid var(--cc-gold)', paddingBottom: 2,
+        }}
       >
-        <ArrowLeft className="w-4 h-4" />
-        Back to matches
+        Browse all matches →
       </Link>
+    </section>
+  );
+}
 
-      {/* HERO */}
-      <div className="relative overflow-hidden rounded-[16px] px-6 py-7 sm:px-8 sm:py-7 mb-3.5 border border-accent-gold/[0.28] bg-gradient-to-br from-accent-gold/[0.12] via-accent-gold/[0.02] to-transparent">
-        <div
-          aria-hidden
-          className="pointer-events-none absolute inset-0"
-          style={{ background: 'radial-gradient(circle at 90% 10%, rgba(245,158,11,0.10), transparent 55%)' }}
-        />
+// ── Hero ───────────────────────────────────────────────────────────────
 
-        {/* meta row */}
-        <div className="relative flex justify-between items-center mb-5 text-xs flex-wrap gap-2">
-          <div className="flex items-center gap-2.5 text-foreground-muted">
-            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-semibold border border-white/8 bg-white/5 text-foreground">
-              <span className="w-1.5 h-1.5 rounded-full bg-accent-gold" />
-              {match.league_name}
-            </span>
-            {match.tournament && <span>{match.tournament}</span>}
+function formatFormCount(form) {
+  if (!form?.last_5_results || form.last_5_results.length === 0) return null
+  const dots = form.last_5_results.join('·')
+  return `LAST 5: ${dots}`
+}
+
+function MDHero({ m }) {
+  const homeFormStr = formatFormCount(m.home_form)
+  const awayFormStr = formatFormCount(m.away_form)
+  const subtitle = m.explanationText || (m.callTeam
+    ? `The model nudges ${m.callTeam} at ${m.callConf}%; the book sits at ${m.marketOdds.toFixed(2)} versus a fair price of ${m.fairOdds.toFixed(2)} — that's the gap we're calling.`
+    : 'Probabilities loaded; no headline call to share.')
+
+  return (
+    <section style={{maxWidth: 1080, margin:'0 auto', padding:'0 40px 60px'}}>
+      <div className="cc-rise" style={{display:'flex', alignItems:'center', gap: 14, marginBottom: 32, fontFamily:'var(--cc-mono)', fontSize: 11, letterSpacing:'0.16em', color:'var(--cc-muted)', textTransform:'uppercase', flexWrap:'wrap'}}>
+        <span style={{color:'var(--cc-gold)'}}>① The Match</span>
+        <span style={{flex: 1, height: 1, background:'var(--cc-line)', minWidth: 40}}/>
+        {m.league && <span>{m.league}{m.stage ? ` · ${m.stage}` : ''}</span>}
+        {m.kickoff && <span>{m.kickoff} CET</span>}
+        {m.venue && <span style={{color:'var(--cc-text)'}}>{m.venue}</span>}
+      </div>
+
+      <div style={{
+        display:'grid', gridTemplateColumns:'1fr auto 1fr', gap: 36,
+        alignItems:'center', padding:'40px 0',
+      }}>
+        <div className="cc-rise" style={{textAlign:'right', animationDelay:'80ms'}}>
+          <div style={{display:'inline-block'}}>
+            <Crest short={m.homeShort} crestUrl={m.homeCrest} color="#FEBE10" size={88}/>
           </div>
-          <div className="flex items-center gap-2.5">
-            {kickoffStr && <span className="text-foreground-muted">{formatLongDate(match.match_date)} · {kickoffStr}</span>}
-            {isLive && (
-              <span className="inline-flex items-center gap-1.5 text-accent-green font-semibold text-xs">
-                <span className="w-1.5 h-1.5 rounded-full bg-accent-green animate-pulse" />
-                LIVE{match.match_minute ? ` · ${match.match_minute}` : ''}
-              </span>
-            )}
-            {countdown && (
-              <span className="inline-flex items-center gap-1.5 text-accent-gold font-semibold text-xs">
-                <span className="w-1.5 h-1.5 rounded-full bg-accent-gold animate-pulse" />
-                {countdown}
-              </span>
-            )}
-          </div>
+          <h1 className="serif" style={{fontSize: 64, fontStyle:'italic', fontWeight:600, letterSpacing:'-0.04em', lineHeight: 1, margin:'18px 0 0', textWrap:'balance'}}>
+            {m.home}
+          </h1>
+          {homeFormStr && (
+            <div className="mono" style={{marginTop: 12, fontSize: 11, color:'var(--cc-muted)', letterSpacing:'0.1em', textTransform:'uppercase'}}>
+              {homeFormStr}
+            </div>
+          )}
         </div>
 
-        {/* crests row */}
-        <div className="relative grid [grid-template-columns:1fr_auto_1fr] items-center gap-5 mb-5">
-          <div className="flex flex-col items-center gap-3">
-            <TeamCrest
-              name={match.home_team_name}
-              crestUrl={match.home_team_crest}
-              countryCode={match.home_team_country_code}
-              size="xl"
-            />
-            <div className="text-[20px] font-extrabold tracking-[-0.01em] text-center">
-              {match.home_team_name}
-            </div>
-            <div className="text-[11px] text-foreground-muted text-center">Home</div>
-            {match.home_form?.last_5_results?.length > 0 && (
-              <FormStrip results={match.home_form.last_5_results} />
-            )}
-          </div>
+        <div className="cc-rise" style={{textAlign:'center', animationDelay:'160ms'}}>
+          {m.status === 'LIVE' && m.score ? (
+            <>
+              <div className="serif tnum" style={{fontSize: 132, fontStyle:'italic', fontWeight:600, color:'var(--cc-text)', letterSpacing:'-0.05em', lineHeight: 1}}>{m.score}</div>
+              <div className="mono" style={{marginTop: 6, fontSize: 11, color:'var(--cc-red)', letterSpacing:'0.12em'}}>● LIVE {m.minute ? `${m.minute}'` : ''}</div>
+            </>
+          ) : m.status === 'FT' && m.score ? (
+            <>
+              <div className="serif tnum" style={{fontSize: 132, fontStyle:'italic', fontWeight:600, color:'var(--cc-text)', letterSpacing:'-0.05em', lineHeight: 1}}>{m.score}</div>
+              <div className="mono" style={{marginTop: 6, fontSize: 11, color:'var(--cc-muted)', letterSpacing:'0.12em'}}>FULL TIME</div>
+            </>
+          ) : (
+            <>
+              <div className="serif tnum" style={{fontSize: 132, fontStyle:'italic', fontWeight:600, color:'var(--cc-muted)', letterSpacing:'-0.05em', lineHeight: 1}}>vs</div>
+              {m.kickoff && (
+                <div className="mono" style={{marginTop: 6, fontSize: 11, color:'var(--cc-gold)', letterSpacing:'0.12em'}}>◆ KO {m.kickoff} CET</div>
+              )}
+            </>
+          )}
+        </div>
 
-          <div className="flex flex-col items-center gap-1.5 min-w-[80px]">
-            {(isLive || isCompleted) ? (
-              <div className="flex items-baseline gap-2 text-[40px] font-extrabold tracking-[-0.03em] text-tabular leading-none">
-                <span className={match.result === 'H' ? 'text-accent-green' : 'text-foreground'}>
-                  {match.home_goals ?? '-'}
-                </span>
-                <span className="text-foreground-muted text-2xl">–</span>
-                <span className={match.result === 'A' ? 'text-accent-green' : 'text-foreground'}>
-                  {match.away_goals ?? '-'}
-                </span>
+        <div className="cc-rise" style={{textAlign:'left', animationDelay:'240ms'}}>
+          <div style={{display:'inline-block'}}>
+            <Crest short={m.awayShort} crestUrl={m.awayCrest} color="#6CABDD" size={88}/>
+          </div>
+          <h1 className="serif" style={{fontSize: 64, fontStyle:'italic', fontWeight:600, letterSpacing:'-0.04em', lineHeight: 1, margin:'18px 0 0', textWrap:'balance'}}>
+            {m.away}
+          </h1>
+          {awayFormStr && (
+            <div className="mono" style={{marginTop: 12, fontSize: 11, color:'var(--cc-muted)', letterSpacing:'0.1em', textTransform:'uppercase'}}>
+              {awayFormStr}
+            </div>
+          )}
+        </div>
+      </div>
+
+      <div className="cc-rise" style={{animationDelay:'320ms', textAlign:'center', maxWidth: 720, margin:'24px auto 0', fontFamily:'var(--cc-serif)', fontStyle:'italic', fontSize: 24, lineHeight: 1.4, color:'var(--cc-muted)'}}>
+        <SplitWords delay={400} step={35}>
+          {subtitle}
+        </SplitWords>
+      </div>
+    </section>
+  );
+}
+
+function MDDivider({ label, right }) {
+  return (
+    <div style={{maxWidth: 1080, margin:'48px auto 24px', padding:'0 40px', display:'flex', alignItems:'center', gap: 22, fontFamily:'var(--cc-mono)', fontSize: 11, letterSpacing:'0.16em', textTransform:'uppercase', color:'var(--cc-muted)'}}>
+      <span style={{color:'var(--cc-text)'}}>{label}</span>
+      <span style={{flex: 1, height: 1, background:'var(--cc-line)'}}/>
+      {right && <span>{right}</span>}
+    </div>
+  );
+}
+
+function MDProbSplit({ m }) {
+  const valH = useCountUp(m.probH, { duration: 700, delay: 200 });
+  const valD = useCountUp(m.probD, { duration: 700, delay: 300 });
+  const valA = useCountUp(m.probA, { duration: 700, delay: 400 });
+  const fair = Number.isFinite(m.fairOdds) ? m.fairOdds.toFixed(2) : '—'
+  const market = Number.isFinite(m.marketOdds) ? m.marketOdds.toFixed(2) : '—'
+  const showEdge = m.valueCall && Number.isFinite(m.edge) && m.edge > 0
+  return (
+    <section style={{maxWidth: 1080, margin:'0 auto', padding:'0 40px 40px'}}>
+      <div style={{display:'grid', gridTemplateColumns:'repeat(3, 1fr)', border:'1px solid var(--cc-line-strong)', borderRadius: 8, overflow:'hidden'}}>
+        <ProbCellMD label={`${m.home} wins`} sub={m.callKey === 'H' ? '◆ The Call' : null} val={valH} c="var(--cc-green)" highlight={m.callKey === 'H'}/>
+        <ProbCellMD label="Draw" sub={m.callKey === 'D' ? '◆ The Call' : null} val={valD} c="var(--cc-amber)" highlight={m.callKey === 'D'}/>
+        <ProbCellMD label={`${m.away} wins`} sub={m.callKey === 'A' ? '◆ The Call' : null} val={valA} c="var(--cc-red)" highlight={m.callKey === 'A'}/>
+      </div>
+      <div style={{display:'flex', justifyContent:'space-between', flexWrap:'wrap', gap: 12, marginTop: 18, fontFamily:'var(--cc-mono)', fontSize: 11, color:'var(--cc-muted)', letterSpacing:'0.08em'}}>
+        <span>Fair odds: <span className="tnum" style={{color:'var(--cc-text)'}}>{fair}</span> vs book <span className="tnum">{market}</span></span>
+        {showEdge && <span style={{color:'var(--cc-gold)'}}>◆ VALUE EDGE +{m.edge}%</span>}
+        <span>Confidence: <span className="tnum" style={{color:'var(--cc-text)'}}>{m.callConf}%</span></span>
+      </div>
+    </section>
+  );
+}
+
+function ProbCellMD({ label, sub, val, c, highlight }) {
+  const intV = Math.round(val);
+  return (
+    <div style={{padding:'34px 28px', borderRight:'1px solid var(--cc-line)', background: highlight ? 'rgba(245,158,11,0.04)' : 'transparent'}}>
+      <Eyebrow>{label}</Eyebrow>
+      {sub && <div className="cc-eyebrow" style={{color:'var(--cc-gold)', marginTop: 4}}>{sub}</div>}
+      <div style={{display:'flex', alignItems:'baseline', gap: 8, marginTop: 12}}>
+        <span className="serif tnum" style={{fontSize: 92, fontStyle:'italic', fontWeight:600, color: highlight ? 'var(--cc-gold)' : 'var(--cc-text)', letterSpacing:'-0.04em', lineHeight: 0.9}}>{intV}</span>
+        <span className="serif" style={{fontSize: 36, color:'var(--cc-muted)', fontStyle:'italic'}}>%</span>
+      </div>
+      <div style={{marginTop: 14, height: 3, background: c, width: `${intV}%`, transition:'width 700ms cubic-bezier(.2,.7,.2,1)'}}/>
+    </div>
+  );
+}
+
+// ── Form & H2H ─────────────────────────────────────────────────────────
+
+function MDForm({ m }) {
+  const homeForm = m.home_form?.last_5_results || []
+  const awayForm = m.away_form?.last_5_results || []
+  const hasForm = homeForm.length > 0 || awayForm.length > 0
+
+  const goalsLine = formGoalsLine(m)
+
+  const h2h = Array.isArray(m.h2h_last_5) ? m.h2h_last_5 : []
+  const h2hStats = h2hAggregate(h2h)
+
+  return (
+    <section style={{maxWidth: 1080, margin:'0 auto', padding:'0 40px', display:'grid', gridTemplateColumns:'1fr 1fr', gap: 48}}>
+      <div>
+        <Eyebrow>Form · Last 5</Eyebrow>
+        {hasForm ? (
+          <>
+            <div style={{marginTop: 16}}>
+              <FormRow team={m.home} short={m.homeShort} crestUrl={m.homeCrest} form={homeForm}/>
+              <FormRow team={m.away} short={m.awayShort} crestUrl={m.awayCrest} form={awayForm}/>
+            </div>
+            {goalsLine && (
+              <div style={{marginTop: 24, fontFamily:'var(--cc-serif)', fontStyle:'italic', fontSize: 16, lineHeight: 1.5, color:'var(--cc-muted)', borderLeft:'2px solid var(--cc-gold)', paddingLeft: 16}}>
+                {goalsLine}
               </div>
-            ) : (
-              <div className="text-[22px] text-foreground-muted font-bold tracking-[0.2em]">VS</div>
             )}
-            <div className="text-[11px] text-foreground-muted">
-              {isCompleted ? 'Full time' : isLive ? `${match.match_minute || ''}` : 'Scheduled'}
-            </div>
-          </div>
-
-          <div className="flex flex-col items-center gap-3">
-            <TeamCrest
-              name={match.away_team_name}
-              crestUrl={match.away_team_crest}
-              countryCode={match.away_team_country_code}
-              size="xl"
-            />
-            <div className="text-[20px] font-extrabold tracking-[-0.01em] text-center">
-              {match.away_team_name}
-            </div>
-            <div className="text-[11px] text-foreground-muted text-center">Away</div>
-            {match.away_form?.last_5_results?.length > 0 && (
-              <FormStrip results={match.away_form.last_5_results} />
-            )}
-          </div>
-        </div>
-
-        {/* Bottom: value pick + completed verdict */}
-        {(pred?.is_value_pick || isCompleted) && (
-          <div className="relative flex justify-center items-center gap-2.5 pt-4 border-t border-accent-gold/15 flex-wrap">
-            {isCompleted && pred?.was_correct === true && (
-              <span className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-semibold bg-accent-green/12 border border-accent-green/40 text-accent-green">
-                ✓ Prediction Correct
-              </span>
-            )}
-            {isCompleted && pred?.was_correct === false && (
-              <span className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-semibold bg-accent-red/12 border border-accent-red/40 text-accent-red">
-                ✗ Prediction Wrong{match.result ? ` — Actual: ${match.result === 'D' ? 'Draw' : match.result === 'H' ? match.home_team_name : match.away_team_name}` : ''}
-              </span>
-            )}
-            {pred?.is_value_pick && (
-              <>
-                <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[11px] font-bold tracking-[0.1em] uppercase bg-accent-gold/12 border border-accent-gold/40 text-accent-gold">
-                  ◆ Value Pick
-                </span>
-                <span className="text-foreground-muted text-xs">
-                  Model sees positive EV on{' '}
-                  <b className="text-foreground font-semibold">
-                    {pred.value_pick_direction === 'H' ? match.home_team_name
-                      : pred.value_pick_direction === 'A' ? match.away_team_name
-                      : 'Draw'}
-                  </b>
-                </span>
-              </>
-            )}
+          </>
+        ) : (
+          <div style={{marginTop: 16, padding:'24px 0', fontFamily:'var(--cc-serif)', fontStyle:'italic', fontSize: 16, lineHeight: 1.5, color:'var(--cc-muted)'}}>
+            Form data not available for this fixture yet.
           </div>
         )}
       </div>
-
-      {/* PREDICTION */}
-      {pred && (
-        <div className="rounded-[14px] border border-white/6 bg-card px-6 py-5 sm:px-7 mb-3.5">
-          <div className="flex justify-between items-center mb-3.5">
-            <div className="text-[15px] font-bold tracking-[-0.01em]">Prediction</div>
-            <div className="text-[11px] text-foreground-muted">Powered by ML model</div>
-          </div>
-
-          <div className="grid [grid-template-columns:1fr_140px] gap-7 items-center max-md:grid-cols-1 max-md:gap-4">
-            <div>
-              {/* prob bar */}
-              <div className="relative h-3.5 rounded-[7px] overflow-hidden mb-2.5">
-                <div className="absolute inset-y-0 left-0" style={{ width: `${homePct}%`, background: '#22C55E' }} />
-                <div className="absolute inset-y-0" style={{ left: `${homePct}%`, width: `${drawPct}%`, background: '#FBBF24' }} />
-                <div className="absolute inset-y-0" style={{ left: `${homePct + drawPct}%`, width: `${awayPct}%`, background: '#EF4444' }} />
-              </div>
-              <div
-                className="grid text-[12px] font-semibold gap-1"
-                style={{ gridTemplateColumns: `${Math.max(homePct, 12)}% ${Math.max(drawPct, 12)}% ${Math.max(awayPct, 12)}%` }}
-              >
-                <div className="text-accent-green truncate" title={match.home_team_name}>{homePct}% {match.home_team_name}</div>
-                <div className="text-accent-amber text-center">{drawPct}% Draw</div>
-                <div className="text-accent-red text-right truncate" title={match.away_team_name}>{awayPct}% {match.away_team_name}</div>
-              </div>
-            </div>
-
-            <div className="text-center rounded-[12px] border border-accent-gold/30 bg-accent-gold/[0.08] px-2 py-3.5">
-              <div className="text-[42px] font-extrabold text-accent-gold tracking-[-0.03em] leading-none text-tabular">
-                {confidencePct != null ? `${confidencePct}%` : '--'}
-              </div>
-              <div className="text-[10px] tracking-[0.18em] uppercase text-foreground-muted font-bold mt-1">Confidence</div>
-            </div>
-          </div>
-
-          <div className="mt-4 px-4 py-3.5 rounded-[10px] bg-accent-green/[0.08] border border-accent-green/25 flex items-center gap-3 flex-wrap">
-            <span className="w-2 h-2 rounded-full bg-accent-green flex-shrink-0" />
-            <span className="text-[11px] tracking-[0.12em] uppercase font-semibold text-foreground-muted">Predicted winner</span>
-            <span className="text-[15px] font-bold text-accent-green">{predictedTeamName}</span>
-          </div>
-
-          {pred.explanation_text && (
-            <div className="mt-4 px-5 py-3.5 rounded-[10px] bg-base border border-white/6">
-              <div className="flex items-center gap-1.5 text-[10px] tracking-[0.18em] uppercase font-bold text-accent-purple mb-2">
-                ◆ Why this prediction
-              </div>
-              <p className="text-[13px] leading-relaxed text-foreground/90">
-                {pred.explanation_text}
-              </p>
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* ODDS */}
-      {pred && (
-        <div className="rounded-[14px] border border-white/6 bg-card px-6 py-5 sm:px-7 mb-3.5">
-          <div className="flex justify-between items-center mb-2.5 flex-wrap gap-2">
-            <div className="flex items-center gap-2 text-[15px] font-bold tracking-[-0.01em]">
-              <span className="text-accent-gold">◆</span> Bookmaker Odds + Model Edge
-            </div>
-            <span className="text-[11px] text-foreground-muted">Bet365 via API-Football</span>
-          </div>
-
-          {pred.odds_home != null && pred.odds_draw != null && pred.odds_away != null ? (
-            <>
-              <p className="text-[11px] text-foreground-muted leading-relaxed mb-3.5">
-                Decimal odds from Bet365.{' '}
-                <b className="text-foreground font-semibold">Market</b> is what the book thinks (1 ÷ odds).{' '}
-                <b className="text-foreground font-semibold">Model</b> is our probability.{' '}
-                <b className="text-foreground font-semibold">Edge</b> is model − market — positive means we see value.
-              </p>
-
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
-                {[
-                  { key: 'H', sub: 'Home', team: match.home_team_name, odds: pred.odds_home, prob: pred.prob_home_win, edge: pred.edge_home, color: 'green' },
-                  { key: 'D', sub: 'Draw', team: 'Tie', odds: pred.odds_draw, prob: pred.prob_draw, edge: pred.edge_draw, color: 'amber' },
-                  { key: 'A', sub: 'Away', team: match.away_team_name, odds: pred.odds_away, prob: pred.prob_away_win, edge: pred.edge_away, color: 'red' },
-                ].map((c) => {
-                  const implied = 1 / c.odds
-                  const modelProb = c.prob ?? 0
-                  const edgeVal = c.edge != null ? c.edge : modelProb - implied
-                  const isPick = pred.predicted_result === c.key
-
-                  const borderColor =
-                    c.color === 'green' ? 'border-accent-green/45'
-                    : c.color === 'amber' ? 'border-accent-amber/45'
-                    : 'border-accent-red/45'
-                  const subColor =
-                    c.color === 'green' ? 'text-accent-green'
-                    : c.color === 'amber' ? 'text-accent-amber'
-                    : 'text-accent-red'
-
-                  return (
-                    <div
-                      key={c.key}
-                      className={`relative rounded-[12px] border bg-base px-4 py-3.5 ${
-                        isPick ? borderColor : 'border-white/6'
-                      }`}
-                    >
-                      {isPick && (
-                        <span className="absolute top-2.5 right-2.5 text-[9px] tracking-[0.1em] font-bold rounded-full px-2 py-0.5 bg-accent-gold/15 text-accent-gold">
-                          OUR PICK
-                        </span>
-                      )}
-                      <div className={`text-[10px] tracking-[0.2em] uppercase font-bold ${
-                        isPick ? subColor : 'text-foreground-muted'
-                      }`}>
-                        {c.sub}
-                      </div>
-                      <div className="text-[13px] font-bold mt-0.5 truncate" title={c.team}>{c.team}</div>
-                      <div className="text-[28px] font-extrabold mt-2 tracking-[-0.03em] text-tabular">{c.odds.toFixed(2)}</div>
-                      <div className="text-[11px] text-foreground-muted mt-1 text-tabular">
-                        Market: <b className="text-foreground font-semibold">{Math.round(implied * 100)}%</b>
-                      </div>
-                      <div className="text-[11px] text-foreground-muted text-tabular">
-                        Model: <b className="text-foreground font-semibold">{Math.round(modelProb * 100)}%</b>
-                      </div>
-                      <div className={`text-[12px] font-bold mt-2.5 pt-2 border-t border-white/6 text-tabular ${
-                        edgeVal > 0 ? 'text-accent-green' : 'text-foreground-muted'
-                      }`}>
-                        Edge: {edgeVal > 0 ? '+' : ''}{(edgeVal * 100).toFixed(1)}%
-                      </div>
-                    </div>
-                  )
-                })}
-              </div>
-
-              {pred.is_value_pick && (
-                <div className="mt-3.5 px-3.5 py-3 rounded-[10px] bg-accent-gold/[0.08] border border-accent-gold/30 flex items-center gap-2.5 text-xs text-foreground/90 flex-wrap">
-                  <span className="inline-flex items-center gap-1 px-3 py-1 rounded-full text-[11px] font-bold tracking-[0.1em] uppercase bg-accent-gold/12 border border-accent-gold/40 text-accent-gold flex-shrink-0">
-                    ◆ Value Pick
+      <div>
+        <Eyebrow>Head to head · Last 5 meetings</Eyebrow>
+        {h2h.length > 0 ? (
+          <>
+            <div style={{marginTop: 16}}>
+              {h2h.map((g, i) => (
+                <div key={i} style={{display:'grid', gridTemplateColumns:'70px 1fr 60px 12px', gap: 14, padding:'10px 0', borderBottom:'1px solid var(--cc-line)', alignItems:'center', fontFamily:'var(--cc-mono)', fontSize: 12}}>
+                  <span style={{color:'var(--cc-muted)', letterSpacing:'0.06em'}}>{formatH2HDate(g.match_date)}</span>
+                  <span style={{color:'var(--cc-text)'}}>
+                    {g.home_team_short_name || '—'} <span style={{color:'var(--cc-dim)'}}>vs</span> {g.away_team_short_name || '—'}
                   </span>
-                  <span>
-                    Edge clears our 8% threshold on{' '}
-                    <b className="text-accent-gold font-bold">
-                      {pred.value_pick_direction === 'H' ? match.home_team_name
-                        : pred.value_pick_direction === 'A' ? match.away_team_name
-                        : 'Draw'}
-                    </b>
-                    .
+                  <span className="tnum serif" style={{fontStyle:'italic', fontSize: 18, fontWeight:600, color: g.result==='D' ? 'var(--cc-amber)' : 'var(--cc-text)'}}>
+                    {g.home_goals != null && g.away_goals != null ? `${g.home_goals}-${g.away_goals}` : '—'}
                   </span>
+                  <span style={{width: 8, height: 8, borderRadius: 2, background: g.result==='H' ? 'var(--cc-green)' : g.result==='A' ? 'var(--cc-red)' : 'var(--cc-amber)'}}/>
                 </div>
-              )}
-            </>
-          ) : (
-            <div className="rounded-[10px] bg-base border border-white/6 px-5 py-5 text-center">
-              <p className="text-sm text-foreground-muted">Bookmaker odds not yet published.</p>
-              <p className="text-xs text-foreground-muted/70 mt-1">
-                Sportsbooks typically price lines within ~14 days of kickoff.
-              </p>
+              ))}
             </div>
-          )}
-        </div>
-      )}
-
-      {/* MATCH STATS (live + completed) */}
-      {(isLive || isCompleted) && (match.home_shots != null || match.home_corners != null) && (
-        <div className="rounded-[14px] border border-white/6 bg-card px-6 py-5 sm:px-7 mb-3.5">
-          <div className="text-[15px] font-bold tracking-[-0.01em] mb-3.5">Match Stats</div>
-          {[
-            ['Shots', match.home_shots, match.away_shots],
-            ['On Target', match.home_shots_on_target, match.away_shots_on_target],
-            ['Corners', match.home_corners, match.away_corners],
-          ].map(([label, h, a]) => (
-            <div key={label} className="flex items-center justify-between py-2.5 border-b border-white/5 last:border-0">
-              <span className="text-sm font-semibold w-16 text-right text-tabular">{h ?? '-'}</span>
-              <span className="text-xs text-foreground-muted flex-1 text-center uppercase tracking-wider">{label}</span>
-              <span className="text-sm font-semibold w-16 text-left text-tabular">{a ?? '-'}</span>
-            </div>
-          ))}
-        </div>
-      )}
-
-      {/* TEAM FORM */}
-      {(match.home_form || match.away_form) && (
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5 mb-3.5">
-          <FormList form={match.home_form} label="Home" match={match} isHome />
-          <FormList form={match.away_form} label="Away" match={match} isHome={false} />
-        </div>
-      )}
-
-      {/* H2H */}
-      {match.h2h_last_5 && match.h2h_last_5.length > 0 && (
-        <div className="rounded-[14px] border border-white/6 bg-card px-6 py-5 sm:px-7 mb-3.5">
-          <div className="flex justify-between items-center mb-3.5 flex-wrap gap-2">
-            <div className="text-[15px] font-bold tracking-[-0.01em]">Head-to-Head — Last 5 Meetings</div>
-            <span className="text-[11px] text-foreground-muted font-medium">
-              {match.h2h_last_5.length} meetings
-            </span>
+            {h2hStats && (
+              <div style={{marginTop: 12, fontFamily:'var(--cc-mono)', fontSize: 10, color:'var(--cc-muted)', letterSpacing:'0.08em'}}>
+                {h2hStats}
+              </div>
+            )}
+          </>
+        ) : (
+          <div style={{marginTop: 16, padding:'24px 0', fontFamily:'var(--cc-serif)', fontStyle:'italic', fontSize: 16, lineHeight: 1.5, color:'var(--cc-muted)'}}>
+            No prior meetings on file.
           </div>
-          <div>
-            {match.h2h_last_5.map((row) => <H2HRow key={row.id} row={row} />)}
-          </div>
-        </div>
-      )}
+        )}
+      </div>
+    </section>
+  );
+}
 
-      {/* footer */}
-      <div className="rounded-[10px] border border-white/6 bg-base px-5 py-3.5 text-xs text-foreground-muted flex justify-between items-center flex-wrap gap-2">
-        <span>
-          Data refreshed {refreshedAgo != null ? `${refreshedAgo}s ago` : 'just now'}
-          {' · '}
-          auto-polling every {match.status === 'live' ? '15s' : match.status === 'completed' ? '5m' : '60s'}
-        </span>
-        <span>
-          Match ID <b className="text-foreground font-semibold">{match.id}</b>
-        </span>
+function formGoalsLine(m) {
+  const hf = m.home_form
+  const af = m.away_form
+  const parts = []
+  if (hf && hf.goals_scored_avg_5 != null && hf.goals_conceded_avg_5 != null) {
+    parts.push(`${m.homeShort} averaging ${Number(hf.goals_scored_avg_5).toFixed(1)} scored / ${Number(hf.goals_conceded_avg_5).toFixed(1)} conceded across the last 5.`)
+  }
+  if (af && af.goals_scored_avg_5 != null && af.goals_conceded_avg_5 != null) {
+    parts.push(`${m.awayShort} ${Number(af.goals_scored_avg_5).toFixed(1)} / ${Number(af.goals_conceded_avg_5).toFixed(1)}.`)
+  }
+  return parts.length > 0 ? parts.join(' ') : null
+}
+
+function h2hAggregate(h2h) {
+  if (!h2h || h2h.length === 0) return null
+  let h = 0, d = 0, a = 0, goals = 0, withGoals = 0
+  for (const g of h2h) {
+    if (g.result === 'H') h++
+    else if (g.result === 'A') a++
+    else if (g.result === 'D') d++
+    if (g.home_goals != null && g.away_goals != null) {
+      goals += g.home_goals + g.away_goals
+      withGoals++
+    }
+  }
+  const avg = withGoals > 0 ? (goals / withGoals).toFixed(1) : null
+  const parts = [
+    `${d} DRAW${d === 1 ? '' : 'S'}`,
+    `${h} HOME`,
+    `${a} AWAY`,
+  ]
+  if (withGoals > 0) {
+    parts.push(`${goals} GOALS`, `AVG ${avg}/MATCH`)
+  }
+  return parts.join(' · ')
+}
+
+function formatH2HDate(iso) {
+  if (!iso) return '—'
+  try {
+    const d = new Date(iso)
+    if (Number.isNaN(d.getTime())) return String(iso).slice(0, 10)
+    return d.toLocaleDateString('en-US', { month: 'short', day: '2-digit' })
+  } catch {
+    return String(iso).slice(0, 10)
+  }
+}
+
+function FormRow({ team, short, crestUrl, form }) {
+  return (
+    <div style={{display:'flex', alignItems:'center', gap: 14, padding:'14px 0', borderBottom:'1px solid var(--cc-line)'}}>
+      <Crest short={short} crestUrl={crestUrl} size={32}/>
+      <div style={{flex: 1, fontFamily:'var(--cc-display)', fontSize: 16, fontWeight: 500}}>{team}</div>
+      <div style={{display:'flex', gap: 6}}>
+        {form.length > 0 ? form.map((r, i) => (
+          <span key={i} style={{
+            width: 22, height: 22, borderRadius: 4,
+            display:'inline-flex', alignItems:'center', justifyContent:'center',
+            fontFamily:'var(--cc-mono)', fontSize: 10, fontWeight: 600,
+            background: r==='W' ? 'rgba(34,197,94,0.18)' : r==='D' ? 'rgba(251,191,36,0.18)' : 'rgba(239,68,68,0.18)',
+            color: r==='W' ? 'var(--cc-green)' : r==='D' ? 'var(--cc-amber)' : 'var(--cc-red)',
+            border: '1px solid currentColor',
+          }}>{r}</span>
+        )) : (
+          <span style={{fontFamily:'var(--cc-mono)', fontSize: 10, color:'var(--cc-dim)', letterSpacing:'0.08em'}}>NO DATA</span>
+        )}
       </div>
     </div>
-  )
+  );
+}
+
+// ── Why ────────────────────────────────────────────────────────────────
+
+function MDWhy({ m }) {
+  const [ref, vis] = useInView();
+  const bullets = pickFor(m, 5)
+  const fair = Number.isFinite(m.fairOdds) ? m.fairOdds.toFixed(2) : '—'
+  const market = Number.isFinite(m.marketOdds) ? m.marketOdds.toFixed(2) : '—'
+  const showEdge = m.valueCall && Number.isFinite(m.edge) && m.edge > 0
+  return (
+    <section ref={ref} style={{maxWidth: 1080, margin:'0 auto', padding:'0 40px'}}>
+      <div style={{display:'grid', gridTemplateColumns:'200px 1fr', gap: 36, paddingTop: 28, borderTop:'1px solid var(--cc-line)'}}>
+        <div>
+          <Eyebrow gold>◆ The Call</Eyebrow>
+          <div className="serif" style={{fontSize: 38, fontStyle:'italic', fontWeight:600, marginTop: 8, letterSpacing:'-0.02em', lineHeight: 1, color:'var(--cc-gold)'}}>{m.callTeam}</div>
+          <div style={{marginTop: 12, fontFamily:'var(--cc-mono)', fontSize: 11, color:'var(--cc-muted)', letterSpacing:'0.06em', lineHeight: 1.7}}>
+            CONFIDENCE&nbsp;<span className="tnum" style={{color:'var(--cc-text)'}}>{m.callConf}%</span><br/>
+            FAIR&nbsp;<span className="tnum" style={{color:'var(--cc-text)'}}>{fair}</span><br/>
+            BOOK&nbsp;<span className="tnum" style={{color:'var(--cc-text)'}}>{market}</span><br/>
+            {showEdge && <span style={{color:'var(--cc-gold)'}}>◆ VALUE&nbsp;<span className="tnum">+{m.edge}%</span></span>}
+          </div>
+        </div>
+        {bullets.length > 0 ? (
+          <ul style={{listStyle:'none', padding:0, margin:0, display:'grid', gap: 18}}>
+            {bullets.map((w, i, arr) => (
+              <li key={i} style={{
+                display:'grid', gridTemplateColumns:'40px 1fr', gap: 16,
+                paddingBottom: 18, borderBottom: i===arr.length-1 ? 'none' : '1px solid var(--cc-line)',
+                opacity: vis ? 1 : 0,
+                transform: vis ? 'none' : 'translateY(12px)',
+                transition: `opacity 420ms ease ${i*100}ms, transform 420ms ease ${i*100}ms`,
+              }}>
+                <span className="serif tnum" style={{fontSize: 32, fontStyle:'italic', fontWeight:600, color:'var(--cc-gold)', letterSpacing:'-0.04em', lineHeight: 1}}>0{i+1}</span>
+                <span style={{fontFamily:'var(--cc-serif)', fontSize: 19, lineHeight: 1.4, color:'var(--cc-text)'}}>{w}</span>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <div style={{fontFamily:'var(--cc-serif)', fontStyle:'italic', fontSize: 18, lineHeight: 1.5, color:'var(--cc-muted)'}}>
+            Reasoning library found no qualifying templates for this fixture — the model still has a call, just nothing surprising to say about it.
+          </div>
+        )}
+      </div>
+    </section>
+  );
+}
+
+// ── Stats ──────────────────────────────────────────────────────────────
+
+function MDStats({ m }) {
+  const stats = [
+    { k: 'Shots', h: m.home_shots, a: m.away_shots, fmt: 'n0' },
+    { k: 'Shots on target', h: m.home_shots_on_target, a: m.away_shots_on_target, fmt: 'n0' },
+    { k: 'Corners', h: m.home_corners, a: m.away_corners, fmt: 'n0' },
+  ]
+  const hasAny = stats.some((s) => s.h != null || s.a != null)
+  if (!hasAny) {
+    return (
+      <section style={{maxWidth: 1080, margin:'0 auto', padding:'0 40px'}}>
+        <div style={{padding:'24px 0', fontFamily:'var(--cc-serif)', fontStyle:'italic', fontSize: 16, lineHeight: 1.5, color:'var(--cc-muted)', textAlign:'center', borderTop:'1px solid var(--cc-line)', borderBottom:'1px solid var(--cc-line)'}}>
+          In-play stats publish after the match completes.
+        </div>
+      </section>
+    )
+  }
+
+  const fmt = (v) => (v == null ? '—' : String(Math.round(Number(v))))
+  const better = (h, a) => {
+    if (h == null || a == null) return null
+    if (h > a) return 'h'
+    if (a > h) return 'a'
+    return null
+  }
+
+  return (
+    <section style={{maxWidth: 1080, margin:'0 auto', padding:'0 40px'}}>
+      <div style={{display:'grid', gridTemplateColumns:'repeat(3, 1fr)', gap: 0, border:'1px solid var(--cc-line)', borderRadius: 6}}>
+        {stats.map((s, i) => {
+          const b = better(s.h, s.a)
+          const hWeight = s.h != null ? Math.max(1, Number(s.h)) : 1
+          const aWeight = s.a != null ? Math.max(1, Number(s.a)) : 1
+          return (
+            <div key={i} style={{
+              padding:'18px 20px',
+              borderRight: i < stats.length - 1 ? '1px solid var(--cc-line)' : 'none',
+            }}>
+              <div className="cc-eyebrow">{s.k}</div>
+              <div style={{display:'flex', justifyContent:'space-between', alignItems:'baseline', marginTop: 10}}>
+                <span className="serif tnum" style={{fontSize: 24, fontStyle:'italic', fontWeight:600, color: b==='h' ? 'var(--cc-text)' : 'var(--cc-muted)'}}>{fmt(s.h)}</span>
+                <span className="mono" style={{fontSize: 9, color:'var(--cc-dim)', letterSpacing:'0.1em'}}>vs</span>
+                <span className="serif tnum" style={{fontSize: 24, fontStyle:'italic', fontWeight:600, color: b==='a' ? 'var(--cc-text)' : 'var(--cc-muted)'}}>{fmt(s.a)}</span>
+              </div>
+              <div style={{display:'flex', height: 2, marginTop: 8, background:'var(--cc-line)'}}>
+                <span style={{flex: hWeight, background: b==='h' ? 'var(--cc-gold)' : 'var(--cc-line-strong)'}}/>
+                <span style={{flex: aWeight, background: b==='a' ? 'var(--cc-gold)' : 'var(--cc-line-strong)'}}/>
+              </div>
+            </div>
+          )
+        })}
+      </div>
+      <div style={{marginTop: 12, fontFamily:'var(--cc-mono)', fontSize: 10, color:'var(--cc-dim)', letterSpacing:'0.08em', textTransform:'uppercase'}}>
+        ◆ Match-state stats only — model features (xG, possession, PPDA) aren't published.
+      </div>
+    </section>
+  );
+}
+
+function MDFooter() {
+  return (
+    <footer style={{maxWidth: 1080, margin:'48px auto 0', padding:'40px 40px 0', borderTop:'1px solid var(--cc-line)', display:'flex', justifyContent:'space-between', fontFamily:'var(--cc-mono)', fontSize: 10, letterSpacing:'0.1em', color:'var(--cc-muted)', textTransform:'uppercase'}}>
+      <span>← <Link to="/" style={{color:'inherit'}}>Back to Dashboard</Link></span>
+      <span>Match · v26.4</span>
+    </footer>
+  );
 }

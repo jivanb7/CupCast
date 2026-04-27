@@ -1,260 +1,1184 @@
-import { useState, useEffect, useCallback } from 'react'
+// Dashboard — Direction C (vertical scroll narrative)
+// Marquee → slate (h-scroll snap) → form chart → value accordion.
+
+import { useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { motion } from 'framer-motion'
-import { getUpcomingMatches, getResults } from '../services/api'
-import FeaturedPrediction from '../components/match/FeaturedPrediction'
-import CountryCard from '../components/ui/CountryCard'
-import LoadingSpinner from '../components/ui/LoadingSpinner'
-import { matchToCountrySlug } from '../utils/countryMap'
+import Aurora from '../components/cc/Aurora'
+import Crest from '../components/cc/Crest'
+import Eyebrow from '../components/cc/Eyebrow'
+import ProbBar, { ProbLegend } from '../components/cc/ProbBar'
+import LiveBadge from '../components/cc/LiveBadge'
+import CCNav from '../components/cc/CCNav'
+import UpdatedBadge from '../components/cc/UpdatedBadge'
+import SplitWords from '../components/cc/SplitWords'
+import CardFooter from '../components/cc/CardFooter'
+import useCountUp from '../hooks/useCountUp'
+import useCCTheme from '../hooks/useCCTheme'
+import useClock from '../hooks/useClock'
+import useInView from '../hooks/useInView'
+import useUpcomingMatches from '../hooks/useUpcomingMatches'
+import useModelPerformance from '../hooks/useModelPerformance'
+import { LEAGUE_FLAG } from '../lib/data'
+import { pickFor, emptyState } from '../lib/reasons'
 
-import StadiumAurora from '../components/background/StadiumAurora'
-import PlayerRail from '../components/dashboard/PlayerRail'
-
-import mbappeImg from '../assets/players/mbappe.webp'
-import cr7Img from '../assets/players/cr7.webp'
-import messiImg from '../assets/players/messi.webp'
-import haalandImg from '../assets/players/haaland.webp'
-import kaneImg from '../assets/players/harrykane.webp'
-import dembeleImg from '../assets/players/dembele.webp'
-
-const COUNTRY_DEFINITIONS = [
-  { slug: 'england', name: 'England', subLabel: 'Premier League' },
-  { slug: 'spain', name: 'Spain', subLabel: 'La Liga' },
-  { slug: 'italy', name: 'Italy', subLabel: 'Serie A' },
-  { slug: 'germany', name: 'Germany', subLabel: 'Bundesliga' },
-  { slug: 'france', name: 'France', subLabel: 'Ligue 1' },
-  { slug: 'rest', name: 'Rest of World', subLabel: 'MLS · UCL · World Cup' },
-]
-
-// Players FLANK the Featured Prediction — top-anchored, descending press row.
-// Each player's `w` and `h` track the natural aspect ratio of their photo so
-// no figure renders pillar-boxed (Messi's image is landscape, hence wider).
-// Sized down overall vs. v1 so heads aren't clipped by the navbar and so
-// nobody dominates. Haaland sits forward (highest z) per user direction.
-//   w = container width in px (default 240 if omitted)
-//   h = container height in vh
-// Six players total — three per side, mirror-balanced. Yamal removed.
-// Each w/h hand-tuned to the photo's natural aspect (Messi is landscape so
-// his container is wider). yVh is from the top of the rail; the bottom row
-// (Messi left, Kane right) sits at the same level as a deliberate symmetry.
-// Six players total — three per side, mirror-balanced. Yamal removed.
-// Bottom row (Messi left, Kane right) sits at the same yVh as deliberate
-// symmetry. Heights/widths track each photo's natural aspect — Messi is
-// landscape so his container is wider and shorter.
-const LEFT_RAIL = [
-  { src: mbappeImg,  alt: 'Kylian Mbappé',  tone: 'warm', xPct: 20, yVh: 8,  z: 4, w: 170, h: 28 },
-  { src: messiImg,   alt: 'Lionel Messi',   tone: 'warm', xPct: 10, yVh: 34, z: 6, w: 400, h: 26 },
-  { src: haalandImg, alt: 'Erling Haaland', tone: 'cool', xPct: 8,  yVh: 42, z: 7, w: 280, h: 46 },
-]
-const RIGHT_RAIL = [
-  { src: cr7Img,     alt: 'Cristiano Ronaldo', tone: 'warm',    xPct: 24, yVh: 4,  z: 5, w: 200, h: 34 },
-  { src: dembeleImg, alt: 'Ousmane Dembélé',   tone: 'cool',    xPct: 38, yVh: 38, z: 4, w: 185, h: 28 },
-  { src: kaneImg,    alt: 'Harry Kane',        tone: 'warm',    xPct: 18, yVh: 62, z: 3, w: 220, h: 32 },
-]
-
-function isToday(dateStr) {
-  const today = new Date().toLocaleDateString('en-CA')
-  return dateStr === today
+function todayIsoSet() {
+  const now = new Date()
+  const utc = now.toISOString().slice(0, 10)
+  const local =
+    `${now.getFullYear()}-` +
+    `${String(now.getMonth() + 1).padStart(2, '0')}-` +
+    `${String(now.getDate()).padStart(2, '0')}`
+  return new Set([utc, local])
 }
 
-function pickFeatured(matches) {
-  if (!matches?.length) return null
-  const now = Date.now()
-  const cutoff = now + 24 * 60 * 60 * 1000
-  const candidates = matches.filter((m) => {
-    if (!m.prediction || m.status === 'completed') return false
-    if (!m.match_date) return false
-    const time = m.kickoff_time && m.kickoff_time !== 'nan' && m.kickoff_time !== 'NaN'
-      ? m.kickoff_time : '12:00'
-    const dt = new Date(`${m.match_date}T${time}:00Z`).getTime()
-    if (Number.isNaN(dt)) return false
-    return dt >= now - 2 * 60 * 60 * 1000 && dt <= cutoff
+function pickMarquee(matches) {
+  if (!matches || matches.length === 0) return null
+  const ranked = [...matches].sort((a, b) => {
+    if (b.valueCall !== a.valueCall) return b.valueCall ? 1 : -1
+    if (b.edge !== a.edge) return b.edge - a.edge
+    return b.callConf - a.callConf
   })
-  if (!candidates.length) return null
-  return candidates.reduce((best, m) =>
-    (m.prediction.confidence ?? 0) > (best.prediction.confidence ?? 0) ? m : best
+  return ranked[0]
+}
+
+export default function Dashboard() {
+  const [theme, setTheme] = useCCTheme()
+  const tick = useClock(12)
+  const upcoming = useUpcomingMatches({ daysAhead: 14 })
+  const perf = useModelPerformance()
+
+  const marquee = useMemo(() => pickMarquee(upcoming.matches), [upcoming.matches])
+
+  const slate = useMemo(() => {
+    if (!upcoming.matches?.length) return []
+    // Prefer matches today, then nearest upcoming. Skip the marquee match
+    // itself so the slate doesn't repeat the front-door card.
+    const sorted = [...upcoming.matches].sort((a, b) => {
+      const ad = a.matchDate || ''
+      const bd = b.matchDate || ''
+      return ad.localeCompare(bd)
+    })
+    return sorted.filter((m) => !marquee || m.id !== marquee.id).slice(0, 7)
+  }, [upcoming.matches, marquee])
+
+  const valuePicks = useMemo(() => {
+    if (!upcoming.matches?.length) return []
+    return upcoming.matches
+      .filter((m) => m.valueCall)
+      .sort((a, b) => b.edge - a.edge)
+      .slice(0, 6)
+      .map((m) => ({
+        id: m.id,
+        match: `${m.home} v ${m.away}`,
+        league: m.league,
+        pick: m.callTeam,
+        edge: m.edge,
+        conf: m.callConf,
+        fairOdds: m.fairOdds,
+        marketOdds: m.marketOdds,
+        kickoff: m.kickoff,
+      }))
+  }, [upcoming.matches])
+
+  const liveCount = useMemo(
+    () => upcoming.matches.filter((m) => m.status === 'LIVE').length,
+    [upcoming.matches]
+  )
+
+  const todayCount = useMemo(() => {
+    const todays = todayIsoSet()
+    return upcoming.matches.filter((m) => todays.has((m.matchDate || '').slice(0, 10))).length
+  }, [upcoming.matches])
+
+  return (
+    <div className={`cc-root cc-${theme}`} style={{ position: 'relative', minHeight: '100vh', overflowX: 'hidden' }}>
+      <Aurora />
+
+      <header
+        style={{
+          position: 'fixed',
+          top: 18,
+          left: 0,
+          right: 0,
+          zIndex: 50,
+          display: 'flex',
+          justifyContent: 'center',
+          pointerEvents: 'none',
+        }}
+      >
+        <div
+          style={{
+            pointerEvents: 'auto',
+            display: 'flex',
+            alignItems: 'center',
+            gap: 18,
+            padding: '10px 18px',
+            background: theme === 'night' ? 'rgba(2,6,23,0.6)' : 'rgba(241,237,229,0.75)',
+            backdropFilter: 'blur(14px)',
+            border: '1px solid var(--cc-line-strong)',
+            borderRadius: 999,
+          }}
+        >
+          <Link
+            to="/"
+            style={{
+              fontFamily: 'var(--cc-serif)',
+              fontStyle: 'italic',
+              fontWeight: 700,
+              fontSize: 16,
+              color: 'var(--cc-gold)',
+              letterSpacing: '-0.02em',
+              textDecoration: 'none',
+            }}
+          >
+            CupCast
+          </Link>
+          <span style={{ color: 'var(--cc-dim)' }}>·</span>
+          <CCNav active="Dashboard" theme={theme} onTheme={setTheme} compact />
+          <span style={{ color: 'var(--cc-dim)' }}>·</span>
+          <UpdatedBadge sec={tick} />
+        </div>
+      </header>
+
+      <div
+        style={{
+          position: 'fixed',
+          right: 32,
+          top: '50%',
+          transform: 'translateY(-50%)',
+          zIndex: 40,
+          display: 'grid',
+          gap: 22,
+          pointerEvents: 'none',
+        }}
+      >
+        {['Marquee', 'Slate', 'Form', 'Value'].map((l, i) => (
+          <div key={l} style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <span
+              style={{
+                fontFamily: 'var(--cc-mono)',
+                fontSize: 9,
+                letterSpacing: '0.16em',
+                color: 'var(--cc-dim)',
+                textTransform: 'uppercase',
+                writingMode: 'vertical-rl',
+                transform: 'rotate(180deg)',
+              }}
+            >
+              0{i + 1} · {l}
+            </span>
+            <span
+              style={{
+                width: 5,
+                height: 5,
+                borderRadius: 3,
+                background: i === 0 ? 'var(--cc-gold)' : 'var(--cc-dim)',
+              }}
+            />
+          </div>
+        ))}
+      </div>
+
+      <div style={{ position: 'relative', zIndex: 2, paddingTop: 100, paddingBottom: 80 }}>
+        <Section1Marquee m={marquee} loading={upcoming.loading} error={upcoming.error} />
+
+        <Divider
+          label="② Today's slate"
+          right={`${String(todayCount).padStart(2, '0')} matches · ${liveCount} live`}
+        />
+        <Section2Slate slate={slate} loading={upcoming.loading} error={upcoming.error} />
+
+        <Divider
+          label="③ Form, this week"
+          right={
+            perf.data
+              ? `Season acc · ${perf.data.accuracy}%`
+              : '—'
+          }
+        />
+        <Section3Form perf={perf.data} loading={perf.loading} error={perf.error} />
+
+        <Divider
+          label="④ Value desk"
+          right="Where the model disagrees with the market"
+          gold
+        />
+        <Section4Value picks={valuePicks} loading={upcoming.loading} />
+
+        <PageFooter />
+      </div>
+    </div>
   )
 }
 
-function KpiTile({ label, value, sub, accent = false, tooltip = null }) {
-  const [showTooltip, setShowTooltip] = useState(false)
+// ──────────────────────────────────────────────────────────────────────
+// Section 1 — Marquee
+// ──────────────────────────────────────────────────────────────────────
+
+function Section1Marquee({ m, loading, error }) {
+  if (loading) return <MarqueeSkeleton />
+  if (error) return <MarqueeMessage copy={emptyState('error')} />
+  if (!m) return <MarqueeMessage copy={emptyState('noMatches')} />
+  return <MarqueeContent m={m} />
+}
+
+function MarqueeContent({ m }) {
+  const valH = useCountUp(m.probH, { duration: 700, delay: 400 })
+  const valD = useCountUp(m.probD, { duration: 700, delay: 500 })
+  const valA = useCountUp(m.probA, { duration: 700, delay: 600 })
+  const [whyRef, whyVis] = useInView()
+
+  const subtitle = m.valueCall
+    ? `The model and the book disagree. ${m.callTeam} is the call — by +${m.edge.toFixed(1)} points over the book.`
+    : `The numbers tilt to ${m.callTeam} at ${m.callConf}%. Fair price ${m.fairOdds.toFixed(2)} against a book of ${m.marketOdds.toFixed(2)}.`
+
   return (
-    <div className="cc-glass-card relative px-4 py-3.5">
-      <div className="flex items-center justify-between mb-1.5">
-        <span className={`cc-label ${accent ? 'text-accent-gold' : ''}`}>{label}</span>
-        {tooltip && (
-          <button
-            type="button"
-            className="w-3.5 h-3.5 rounded-full border cc-content-text-muted text-[9px] font-bold italic font-serif inline-flex items-center justify-center hover:border-accent-gold hover:text-accent-gold cursor-help"
-            style={{ borderColor: 'var(--content-text-muted)' }}
-            onMouseEnter={() => setShowTooltip(true)}
-            onMouseLeave={() => setShowTooltip(false)}
-            onFocus={() => setShowTooltip(true)}
-            onBlur={() => setShowTooltip(false)}
-            aria-label={`More info: ${label}`}
+    <section style={{ maxWidth: 980, margin: '0 auto', padding: '0 40px 100px' }}>
+      <div
+        className="cc-rise"
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 14,
+          marginBottom: 28,
+          fontFamily: 'var(--cc-mono)',
+          fontSize: 11,
+          letterSpacing: '0.16em',
+          color: 'var(--cc-muted)',
+          textTransform: 'uppercase',
+        }}
+      >
+        <span style={{ color: 'var(--cc-gold)' }}>① Tonight</span>
+        <span style={{ flex: 1, height: 1, background: 'var(--cc-line)' }} />
+        <span>{m.league}{m.stage ? ` · ${m.stage}` : ''}</span>
+        {m.kickoff && <span>{m.kickoff} CET</span>}
+        {m.venue && <span style={{ color: 'var(--cc-text)' }}>{m.venue}</span>}
+      </div>
+
+      <h1
+        className="cc-rise"
+        style={{
+          fontFamily: 'var(--cc-serif)',
+          fontStyle: 'italic',
+          fontWeight: 600,
+          fontSize: 96,
+          letterSpacing: '-0.04em',
+          lineHeight: 0.95,
+          margin: '0 0 22px',
+          animationDelay: '80ms',
+        }}
+      >
+        {m.home}
+        <br />
+        <span
+          style={{
+            fontStyle: 'normal',
+            color: 'var(--cc-muted)',
+            fontWeight: 400,
+            letterSpacing: '-0.03em',
+          }}
+        >
+          versus
+        </span>
+        <br />
+        {m.away}.
+      </h1>
+
+      <p
+        style={{
+          fontSize: 19,
+          lineHeight: 1.5,
+          color: 'var(--cc-muted)',
+          maxWidth: 640,
+          margin: '0 0 42px',
+        }}
+      >
+        <SplitWords delay={200} step={40}>
+          {subtitle}
+        </SplitWords>
+      </p>
+
+      <div
+        className="cc-rise"
+        style={{
+          display: 'grid',
+          gridTemplateColumns: 'repeat(3, 1fr)',
+          gap: 0,
+          animationDelay: '240ms',
+          border: '1px solid var(--cc-line-strong)',
+          borderRadius: 8,
+          overflow: 'hidden',
+        }}
+      >
+        <ProbCellAnim
+          label={`${m.home} wins`}
+          sub={m.callKey === 'H' ? '◆ The Call' : null}
+          team={m.homeShort}
+          val={valH}
+          c="var(--cc-green)"
+          highlight={m.callKey === 'H'}
+        />
+        <ProbCellAnim
+          label="Draw"
+          sub={m.callKey === 'D' ? '◆ The Call' : null}
+          team="X"
+          val={valD}
+          c="var(--cc-amber)"
+          highlight={m.callKey === 'D'}
+        />
+        <ProbCellAnim
+          label={`${m.away} wins`}
+          sub={m.callKey === 'A' ? '◆ The Call' : null}
+          team={m.awayShort}
+          val={valA}
+          c="var(--cc-red)"
+          highlight={m.callKey === 'A'}
+        />
+      </div>
+
+      <div
+        ref={whyRef}
+        className="cc-rise"
+        style={{
+          marginTop: 56,
+          animationDelay: '320ms',
+          display: 'grid',
+          gridTemplateColumns: '200px 1fr',
+          gap: 32,
+          paddingTop: 32,
+          borderTop: '1px solid var(--cc-line)',
+        }}
+      >
+        <div>
+          <Eyebrow gold>◆ The Call</Eyebrow>
+          <div
+            className="serif"
+            style={{
+              fontSize: 38,
+              fontStyle: 'italic',
+              fontWeight: 600,
+              marginTop: 8,
+              letterSpacing: '-0.02em',
+              lineHeight: 1,
+              color: 'var(--cc-gold)',
+            }}
           >
-            i
-          </button>
-        )}
+            {m.callTeam}
+          </div>
+          <div
+            style={{
+              marginTop: 12,
+              fontFamily: 'var(--cc-mono)',
+              fontSize: 11,
+              color: 'var(--cc-muted)',
+              letterSpacing: '0.06em',
+              lineHeight: 1.7,
+            }}
+          >
+            CONFIDENCE&nbsp;<span className="tnum" style={{ color: 'var(--cc-text)' }}>{m.callConf}%</span>
+            <br />
+            FAIR&nbsp;<span className="tnum" style={{ color: 'var(--cc-text)' }}>{m.fairOdds.toFixed(2)}</span>
+            <br />
+            BOOK&nbsp;<span className="tnum" style={{ color: 'var(--cc-text)' }}>{m.marketOdds.toFixed(2)}</span>
+            <br />
+            {m.valueCall && (
+              <span style={{ color: 'var(--cc-gold)' }}>
+                ◆ VALUE&nbsp;<span className="tnum">+{m.edge.toFixed(1)}%</span>
+              </span>
+            )}
+          </div>
+        </div>
+
+        <ul style={{ listStyle: 'none', padding: 0, margin: 0, display: 'grid', gap: 18 }}>
+          {pickFor(m, 5).map((w, i, arr) => (
+            <li
+              key={i}
+              style={{
+                display: 'grid',
+                gridTemplateColumns: '40px 1fr',
+                gap: 16,
+                paddingBottom: 18,
+                borderBottom: i === arr.length - 1 ? 'none' : '1px solid var(--cc-line)',
+                opacity: whyVis ? 1 : 0,
+                transform: whyVis ? 'none' : 'translateY(12px)',
+                transition: `opacity 420ms ease ${i * 100}ms, transform 420ms ease ${i * 100}ms`,
+              }}
+            >
+              <span
+                className="serif tnum"
+                style={{
+                  fontSize: 32,
+                  fontStyle: 'italic',
+                  fontWeight: 600,
+                  color: 'var(--cc-gold)',
+                  letterSpacing: '-0.04em',
+                  lineHeight: 1,
+                }}
+              >
+                0{i + 1}
+              </span>
+              <span style={{ fontFamily: 'var(--cc-serif)', fontSize: 19, lineHeight: 1.4, color: 'var(--cc-text)' }}>
+                {w}
+              </span>
+            </li>
+          ))}
+        </ul>
+      </div>
+
+      <div style={{ marginTop: 28 }}>
+        <Link
+          to={`/match/${m.id}`}
+          style={{
+            fontFamily: 'var(--cc-mono)',
+            fontSize: 11,
+            letterSpacing: '0.12em',
+            color: 'var(--cc-gold)',
+            textDecoration: 'none',
+            textTransform: 'uppercase',
+          }}
+        >
+          → Open match brief
+        </Link>
+      </div>
+    </section>
+  )
+}
+
+function MarqueeSkeleton() {
+  return (
+    <section style={{ maxWidth: 980, margin: '0 auto', padding: '0 40px 100px' }}>
+      <div
+        style={{
+          height: 360,
+          background: 'var(--cc-surface)',
+          border: '1px solid var(--cc-line)',
+          borderRadius: 8,
+          opacity: 0.5,
+          animation: 'cc-rise 600ms cubic-bezier(.2,.7,.2,1) both',
+        }}
+      />
+    </section>
+  )
+}
+
+function MarqueeMessage({ copy }) {
+  return (
+    <section style={{ maxWidth: 980, margin: '0 auto', padding: '40px 40px 100px', textAlign: 'center' }}>
+      <div
+        style={{
+          fontFamily: 'var(--cc-serif)',
+          fontStyle: 'italic',
+          fontSize: 28,
+          color: 'var(--cc-muted)',
+          lineHeight: 1.4,
+          maxWidth: 640,
+          margin: '0 auto',
+        }}
+      >
+        {copy}
+      </div>
+    </section>
+  )
+}
+
+function ProbCellAnim({ label, sub, team, val, c, highlight }) {
+  const intV = Math.round(val)
+  return (
+    <div
+      style={{
+        padding: '28px 24px',
+        position: 'relative',
+        borderRight: '1px solid var(--cc-line)',
+        background: highlight ? 'rgba(245,158,11,0.04)' : 'transparent',
+      }}
+    >
+      <Eyebrow>{label}</Eyebrow>
+      {sub && <div className="cc-eyebrow" style={{ color: 'var(--cc-gold)', marginTop: 4 }}>{sub}</div>}
+      <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginTop: 10 }}>
+        <span
+          className="serif tnum"
+          style={{
+            fontSize: 76,
+            fontStyle: 'italic',
+            fontWeight: 600,
+            color: highlight ? 'var(--cc-gold)' : 'var(--cc-text)',
+            letterSpacing: '-0.04em',
+            lineHeight: 0.9,
+          }}
+        >
+          {intV}
+        </span>
+        <span className="serif" style={{ fontSize: 32, color: 'var(--cc-muted)', fontStyle: 'italic' }}>
+          %
+        </span>
       </div>
       <div
-        className={`text-3xl font-extrabold tracking-[-0.03em] text-tabular ${accent ? 'text-accent-gold' : 'cc-content-text'}`}
+        style={{
+          marginTop: 12,
+          height: 3,
+          background: c,
+          width: `${intV}%`,
+          transition: 'width 700ms cubic-bezier(.2,.7,.2,1)',
+        }}
+      />
+      <div
+        style={{
+          marginTop: 8,
+          fontFamily: 'var(--cc-mono)',
+          fontSize: 10,
+          color: 'var(--cc-muted)',
+          letterSpacing: '0.1em',
+        }}
       >
-        {value}
+        {team}
       </div>
-      {sub && <div className="text-[11px] cc-content-text-muted mt-0.5">{sub}</div>}
+    </div>
+  )
+}
 
-      {tooltip && showTooltip && (
+// ──────────────────────────────────────────────────────────────────────
+// Layout helpers
+// ──────────────────────────────────────────────────────────────────────
+
+function Divider({ label, right, gold }) {
+  return (
+    <div
+      style={{
+        maxWidth: 980,
+        margin: '0 auto',
+        padding: '0 40px',
+        display: 'flex',
+        alignItems: 'center',
+        gap: 22,
+        fontFamily: 'var(--cc-mono)',
+        fontSize: 11,
+        letterSpacing: '0.16em',
+        textTransform: 'uppercase',
+        color: 'var(--cc-muted)',
+      }}
+    >
+      <span style={{ color: gold ? 'var(--cc-gold)' : 'var(--cc-text)' }}>{label}</span>
+      <span style={{ flex: 1, height: 1, background: 'var(--cc-line)' }} />
+      <span>{right}</span>
+    </div>
+  )
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// Section 2 — Slate
+// ──────────────────────────────────────────────────────────────────────
+
+function Section2Slate({ slate, loading, error }) {
+  if (loading) return <SlateSkeleton />
+  if (error) return <SlateMessage copy={emptyState('error')} />
+  if (slate.length === 0) return <SlateMessage copy={emptyState('noMatches')} />
+  return (
+    <section style={{ padding: '48px 0 80px' }}>
+      <div
+        style={{
+          display: 'flex',
+          gap: 18,
+          padding: '0 max(40px, calc((100vw - 1100px) / 2))',
+          overflowX: 'auto',
+          scrollSnapType: 'x mandatory',
+          scrollPadding: 40,
+        }}
+      >
+        {slate.map((m, i) => (
+          <SnapCard m={m} key={m.id} idx={i} />
+        ))}
+      </div>
+    </section>
+  )
+}
+
+function SlateSkeleton() {
+  return (
+    <section style={{ padding: '48px 0 80px' }}>
+      <div
+        style={{
+          display: 'flex',
+          gap: 18,
+          padding: '0 max(40px, calc((100vw - 1100px) / 2))',
+        }}
+      >
+        {[0, 1, 2, 3, 4].map((i) => (
+          <div
+            key={i}
+            style={{
+              flex: '0 0 280px',
+              height: 220,
+              background: 'var(--cc-surface)',
+              border: '1px solid var(--cc-line)',
+              borderRadius: 8,
+              opacity: 0.5,
+              animation: `cc-rise 600ms ${i * 80}ms cubic-bezier(.2,.7,.2,1) both`,
+            }}
+          />
+        ))}
+      </div>
+    </section>
+  )
+}
+
+function SlateMessage({ copy }) {
+  return (
+    <section style={{ padding: '48px 0 80px', textAlign: 'center' }}>
+      <div
+        style={{
+          fontFamily: 'var(--cc-serif)',
+          fontStyle: 'italic',
+          fontSize: 22,
+          color: 'var(--cc-muted)',
+          maxWidth: 640,
+          margin: '0 auto',
+        }}
+      >
+        {copy}
+      </div>
+    </section>
+  )
+}
+
+function SnapCard({ m, idx }) {
+  const isLive = m.status === 'LIVE'
+  const homeScore = isLive || m.status === 'FT' ? m.score?.split('-')[0] : null
+  const awayScore = isLive || m.status === 'FT' ? m.score?.split('-')[1] : null
+  return (
+    <Link to={`/match/${m.id}`} style={{ textDecoration: 'none', color: 'inherit' }}>
+      <div
+        className="cc-rise cc-hover"
+        style={{
+          flex: '0 0 280px',
+          scrollSnapAlign: 'start',
+          background: 'var(--cc-surface)',
+          border: '1px solid var(--cc-line)',
+          borderRadius: 8,
+          padding: 22,
+          animationDelay: `${idx * 80}ms`,
+          cursor: 'pointer',
+          display: 'block',
+        }}
+      >
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 18 }}>
+          <span
+            style={{
+              fontFamily: 'var(--cc-mono)',
+              fontSize: 10,
+              color: 'var(--cc-muted)',
+              letterSpacing: '0.1em',
+            }}
+          >
+            {LEAGUE_FLAG[m.league] || '⚽'} {String(m.league).toUpperCase()}
+          </span>
+          {isLive ? (
+            <LiveBadge minute={m.minute || 0} />
+          ) : (
+            <span className="mono tnum" style={{ fontSize: 10, color: 'var(--cc-muted)' }}>
+              {m.kickoff}
+            </span>
+          )}
+        </div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginBottom: 18 }}>
+          <SnapTeamRow short={m.homeShort} crest={m.homeCrest} name={m.home} score={homeScore} />
+          <SnapTeamRow short={m.awayShort} crest={m.awayCrest} name={m.away} score={awayScore} />
+        </div>
+        <ProbBar h={m.probH} d={m.probD} a={m.probA} />
+        <ProbLegend h={m.probH} d={m.probD} a={m.probA} />
+        <CardFooter pick={m.callShort} conf={m.callConf} value={m.valueCall} edge={m.edge} />
+      </div>
+    </Link>
+  )
+}
+
+function SnapTeamRow({ short, crest, name, score }) {
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+      <Crest short={short} crestUrl={crest} size={26} />
+      <div style={{ flex: 1, fontFamily: 'var(--cc-display)', fontSize: 14, fontWeight: 500 }}>
+        {name}
+      </div>
+      {score != null && (
         <div
-          className="cc-glass-card absolute right-2 top-full mt-2 z-10 w-[230px] px-3 py-2.5 text-[11px] cc-content-text leading-relaxed shadow-xl"
-          role="tooltip"
+          className="serif tnum"
+          style={{
+            fontSize: 22,
+            fontStyle: 'italic',
+            fontWeight: 600,
+            color: 'var(--cc-text)',
+            letterSpacing: '-0.02em',
+          }}
         >
-          {tooltip}
+          {score}
         </div>
       )}
     </div>
   )
 }
 
-export default function Dashboard() {
-  const [matches, setMatches] = useState([])
-  const [results, setResults] = useState([])
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState(null)
+// ──────────────────────────────────────────────────────────────────────
+// Section 3 — Form, this week
+// ──────────────────────────────────────────────────────────────────────
 
-  const fetchData = useCallback((showSpinner = true) => {
-    if (showSpinner) {
-      setLoading(true)
-      setError(null)
-    }
-    Promise.all([
-      getUpcomingMatches(null, 60),
-      getResults(null, 7),
-    ])
-      .then(([upcomingData, resultsData]) => {
-        setMatches(upcomingData.matches || [])
-        setResults(resultsData.matches || [])
-        setError(null)
-        setLoading(false)
-      })
-      .catch((err) => {
-        if (showSpinner) setError(err.message)
-        setLoading(false)
-      })
-  }, [])
-
-  useEffect(() => {
-    fetchData(true)
-    const interval = setInterval(() => fetchData(false), 60000)
-    return () => clearInterval(interval)
-  }, [fetchData])
-
-  const featured = pickFeatured(matches)
-  const todayMatches = matches.filter((m) => isToday(m.match_date))
-  const todayCount = todayMatches.length
-  const valuePicks = todayMatches.filter((m) => m.prediction?.is_value_pick).length
-
-  const todayResults = results.filter(
-    (m) => isToday(m.match_date) && m.prediction?.was_correct != null
-  )
-  const todayCorrect = todayResults.filter((m) => m.prediction.was_correct).length
-  const todayAccuracy = todayResults.length > 0
-    ? Math.round((todayCorrect / todayResults.length) * 100)
-    : null
-
-  const SLUG_TO_TILE = {
-    england: 'england', spain: 'spain', italy: 'italy',
-    germany: 'germany', france: 'france',
-    usa: 'rest', ucl: 'rest', 'world-cup': 'rest', rest: 'rest',
-  }
-  const counts = COUNTRY_DEFINITIONS.reduce((acc, c) => {
-    acc[c.slug] = { todayCount: 0, upcomingCount: 0 }
-    return acc
-  }, {})
-  matches.forEach((m) => {
-    const rawSlug = matchToCountrySlug(m)
-    const tileSlug = SLUG_TO_TILE[rawSlug] || 'rest'
-    if (!counts[tileSlug]) return
-    if (isToday(m.match_date)) counts[tileSlug].todayCount += 1
-    else counts[tileSlug].upcomingCount += 1
-  })
-
-  const countryData = COUNTRY_DEFINITIONS.map((c) => ({
-    ...c,
-    todayCount: counts[c.slug].todayCount,
-    upcomingCount: counts[c.slug].upcomingCount,
-  }))
-
-  if (loading && !matches.length) {
+function Section3Form({ perf, loading, error }) {
+  if (loading) {
     return (
-      <>
-        <StadiumAurora />
-        <div className="flex justify-center pt-32 relative z-10">
-          <LoadingSpinner size="lg" label="Loading dashboard" />
+      <section style={{ maxWidth: 980, margin: '0 auto', padding: '48px 40px 80px' }}>
+        <div
+          style={{
+            height: 280,
+            background: 'var(--cc-surface)',
+            border: '1px solid var(--cc-line)',
+            borderRadius: 8,
+            opacity: 0.5,
+            animation: 'cc-rise 600ms cubic-bezier(.2,.7,.2,1) both',
+          }}
+        />
+      </section>
+    )
+  }
+  if (error || !perf) {
+    return (
+      <section style={{ maxWidth: 980, margin: '0 auto', padding: '48px 40px 80px', textAlign: 'center' }}>
+        <div style={{ fontFamily: 'var(--cc-serif)', fontStyle: 'italic', fontSize: 22, color: 'var(--cc-muted)' }}>
+          {emptyState('calibrating')}
         </div>
-      </>
+      </section>
     )
   }
 
+  const deltaPositive = perf.accuracyDelta >= 0
+
   return (
-    <>
-      <StadiumAurora />
-
-      <PlayerRail side="left" players={LEFT_RAIL} />
-      <PlayerRail side="right" players={RIGHT_RAIL} />
-
-      <div className="max-w-[1180px] mx-auto px-4 sm:px-6 lg:px-12 pt-20 pb-6 relative z-10">
-        {error && !matches.length && (
-          <div className="cc-glass-card p-6 mb-6 text-center">
-            <p className="text-accent-red">{error}</p>
+    <section style={{ maxWidth: 980, margin: '0 auto', padding: '48px 40px 80px' }}>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 48, alignItems: 'end', marginBottom: 30 }}>
+        <div>
+          <Eyebrow>This week</Eyebrow>
+          <div
+            className="serif tnum"
+            style={{
+              fontSize: 132,
+              fontStyle: 'italic',
+              fontWeight: 600,
+              letterSpacing: '-0.04em',
+              lineHeight: 0.9,
+              marginTop: 8,
+            }}
+          >
+            {perf.accuracy}
+            <span style={{ fontSize: 56, color: 'var(--cc-muted)' }}>%</span>
           </div>
-        )}
-
-        {/* HERO — featured prediction (no player center; players live on rails) */}
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.6, delay: 0.2, ease: [0.22, 1, 0.36, 1] }}
-          className="mb-6"
-        >
-          <FeaturedPrediction match={featured} />
-        </motion.div>
-
-        {/* KPIs */}
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 mb-5">
-          <KpiTile label="Today's Matches" value={todayCount} />
-          <KpiTile
-            label="Today's Accuracy"
-            value={todayAccuracy != null ? `${todayAccuracy}%` : '--'}
-            sub={todayResults.length > 0 ? `${todayCorrect}/${todayResults.length} evaluated` : 'No games evaluated yet'}
-            accent
-          />
-          <KpiTile
-            label="Value Picks Found"
-            value={valuePicks}
-            sub="From today's fixtures"
-            tooltip="Matches where our model's probability exceeds the bookmaker's by at least 8%. Mathematically favorable bets."
-          />
+          <div
+            style={{
+              marginTop: 6,
+              fontFamily: 'var(--cc-mono)',
+              fontSize: 11,
+              color: deltaPositive ? 'var(--cc-green)' : 'var(--cc-red)',
+              letterSpacing: '0.08em',
+            }}
+          >
+            {deltaPositive ? '▲' : '▼'} {deltaPositive ? '+' : ''}{perf.accuracyDelta} vs season avg
+          </div>
         </div>
+        <p
+          style={{
+            fontFamily: 'var(--cc-serif)',
+            fontStyle: 'italic',
+            fontSize: 22,
+            lineHeight: 1.4,
+            margin: 0,
+            color: 'var(--cc-muted)',
+            paddingBottom: 14,
+          }}
+        >
+          F1 macro <span style={{ color: 'var(--cc-text)' }} className="tnum">{perf.f1Macro}</span> · log loss <span style={{ color: 'var(--cc-text)' }} className="tnum">{perf.logLoss}</span>
+        </p>
+      </div>
 
-        <h2 className="text-[20px] font-bold tracking-[-0.01em] mb-3.5 cc-content-text">
-          Explore by country
-        </h2>
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-          {countryData.map((c) => (
-            <CountryCard key={c.slug} country={c} />
+      {perf.lastWeek.length >= 2 ? (
+        <RollingChart data={perf.lastWeek} />
+      ) : (
+        <div
+          style={{
+            padding: '40px 0',
+            fontFamily: 'var(--cc-serif)',
+            fontStyle: 'italic',
+            fontSize: 18,
+            color: 'var(--cc-muted)',
+            textAlign: 'center',
+          }}
+        >
+          {emptyState('calibrating')}
+        </div>
+      )}
+
+      {perf.perLeague.length > 0 && (
+        <div
+          style={{
+            display: 'grid',
+            gridTemplateColumns: `repeat(${Math.min(5, perf.perLeague.length)}, 1fr)`,
+            gap: 0,
+            marginTop: 36,
+            borderTop: '1px solid var(--cc-line)',
+          }}
+        >
+          {perf.perLeague.slice(0, 5).map((l, i, arr) => (
+            <div
+              key={l.code || i}
+              style={{
+                padding: '18px 16px',
+                borderRight: i < arr.length - 1 ? '1px solid var(--cc-line)' : 'none',
+              }}
+            >
+              <div className="cc-eyebrow" style={{ fontSize: 9 }}>
+                {l.flag} {l.name}
+              </div>
+              <div
+                className="serif tnum"
+                style={{
+                  fontSize: 28,
+                  fontStyle: 'italic',
+                  fontWeight: 600,
+                  marginTop: 4,
+                  letterSpacing: '-0.02em',
+                }}
+              >
+                {l.acc}
+                <span style={{ fontSize: 12, color: 'var(--cc-muted)' }}>%</span>
+              </div>
+            </div>
           ))}
         </div>
+      )}
+    </section>
+  )
+}
 
-        <div className="text-center mt-6">
-          <Link
-            to="/matches?tab=today"
-            className="cc-glass-card inline-block px-6 py-2.5 text-sm font-semibold transition-colors hover:border-accent-gold/30 cc-content-text"
+function RollingChart({ data }) {
+  const w = 880
+  const h = 220
+  // Dynamic y-range: pad ±10pp around the actual data so real numbers in
+  // the 30–50 band don't get clipped or look flat against a 40–90 axis.
+  const accs = data.map((d) => d.acc)
+  const dataMin = Math.min(...accs)
+  const dataMax = Math.max(...accs)
+  const min = Math.max(0, Math.floor((dataMin - 10) / 10) * 10)
+  const max = Math.min(100, Math.ceil((dataMax + 10) / 10) * 10)
+  const span = Math.max(1, max - min)
+  const pts = data.map((d, i) => ({
+    x: (i / Math.max(1, data.length - 1)) * w,
+    y: h - ((d.acc - min) / span) * h,
+    ...d,
+  }))
+  const path = pts.map((p, i) => (i === 0 ? `M${p.x},${p.y}` : `L${p.x},${p.y}`)).join(' ')
+  const area = `${path} L${w},${h} L0,${h} Z`
+  const ticks = []
+  for (let v = Math.ceil(min / 10) * 10; v <= max; v += 10) ticks.push(v)
+  return (
+    <div style={{ position: 'relative' }}>
+      <svg viewBox={`0 0 ${w} ${h + 30}`} style={{ width: '100%', height: h + 30, display: 'block' }}>
+        <defs>
+          <linearGradient id="cFill" x1="0" x2="0" y1="0" y2="1">
+            <stop offset="0%" stopColor="var(--cc-gold)" stopOpacity="0.22" />
+            <stop offset="100%" stopColor="var(--cc-gold)" stopOpacity="0" />
+          </linearGradient>
+        </defs>
+        {ticks.map((v) => {
+          const y = h - ((v - min) / span) * h
+          return (
+            <g key={v}>
+              <line x1="0" x2={w} y1={y} y2={y} stroke="var(--cc-line)" strokeDasharray="2 4" />
+              <text
+                x={w - 4}
+                y={y - 4}
+                textAnchor="end"
+                fontSize="9"
+                fill="var(--cc-dim)"
+                fontFamily="var(--cc-mono)"
+                letterSpacing="0.1em"
+              >
+                {v}%
+              </text>
+            </g>
+          )
+        })}
+        <path d={area} fill="url(#cFill)" />
+        <path
+          d={path}
+          fill="none"
+          stroke="var(--cc-gold)"
+          strokeWidth="2"
+          strokeDasharray="2000"
+          strokeDashoffset="2000"
+          style={{ animation: 'cc-line-in 1200ms ease-out forwards' }}
+        />
+        {pts.map((p, i) => (
+          <g key={i} style={{ opacity: 0, animation: `cc-fade-in 400ms ease-out ${800 + i * 80}ms forwards` }}>
+            <circle
+              cx={p.x}
+              cy={p.y}
+              r={i === pts.length - 1 ? 6 : 3.5}
+              fill={i === pts.length - 1 ? 'var(--cc-gold)' : 'var(--cc-bg)'}
+              stroke="var(--cc-gold)"
+              strokeWidth="2"
+            />
+            <text
+              x={p.x}
+              y={h + 18}
+              textAnchor="middle"
+              fontSize="9"
+              fill="var(--cc-dim)"
+              fontFamily="var(--cc-mono)"
+              letterSpacing="0.1em"
+            >
+              {(p.d || '').split(' ')[1] || p.d}
+            </text>
+            <text
+              x={p.x}
+              y={p.y - 12}
+              textAnchor="middle"
+              fontSize="11"
+              fill={i === pts.length - 1 ? 'var(--cc-gold)' : 'var(--cc-text)'}
+              fontFamily="var(--cc-mono)"
+              fontWeight="600"
+            >
+              {p.acc}
+            </text>
+          </g>
+        ))}
+      </svg>
+    </div>
+  )
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// Section 4 — Value desk
+// ──────────────────────────────────────────────────────────────────────
+
+function Section4Value({ picks, loading }) {
+  if (loading) {
+    return (
+      <section style={{ maxWidth: 980, margin: '0 auto', padding: '48px 40px 60px' }}>
+        {[0, 1, 2].map((i) => (
+          <div
+            key={i}
+            style={{
+              height: 84,
+              borderTop: i === 0 ? '1px solid var(--cc-line-strong)' : 'none',
+              borderBottom: '1px solid var(--cc-line-strong)',
+              background: 'var(--cc-surface)',
+              opacity: 0.5,
+              animation: `cc-rise 600ms ${i * 80}ms cubic-bezier(.2,.7,.2,1) both`,
+            }}
+          />
+        ))}
+      </section>
+    )
+  }
+  if (picks.length === 0) {
+    return (
+      <section style={{ maxWidth: 980, margin: '0 auto', padding: '48px 40px 60px', textAlign: 'center' }}>
+        <div
+          style={{
+            fontFamily: 'var(--cc-serif)',
+            fontStyle: 'italic',
+            fontSize: 22,
+            color: 'var(--cc-muted)',
+            maxWidth: 640,
+            margin: '0 auto',
+          }}
+        >
+          {emptyState('noValue')}
+        </div>
+      </section>
+    )
+  }
+  return (
+    <section style={{ maxWidth: 980, margin: '0 auto', padding: '48px 40px 60px' }}>
+      {picks.map((v, i) => (
+        <ValueAccord key={v.id} v={v} idx={i} expanded={i === 0} />
+      ))}
+    </section>
+  )
+}
+
+function ValueAccord({ v, idx, expanded }) {
+  const [open, setOpen] = useState(expanded)
+  const reasonText = useMemo(() => {
+    // Use the reasoning library to fill the accordion's "why" line.
+    const bullets = pickFor(
+      {
+        id: v.id,
+        home: v.match.split(' v ')[0],
+        away: v.match.split(' v ')[1],
+        callTeam: v.pick,
+        fairOdds: v.fairOdds,
+        marketOdds: v.marketOdds,
+      },
+      1
+    )
+    return bullets[0] || `The model has ${v.pick} at ${v.conf}% — the book is mispriced.`
+  }, [v])
+
+  return (
+    <div
+      style={{
+        borderTop: idx === 0 ? '1px solid var(--cc-line-strong)' : 'none',
+        borderBottom: '1px solid var(--cc-line-strong)',
+      }}
+    >
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        style={{
+          width: '100%',
+          textAlign: 'left',
+          background: 'none',
+          border: 'none',
+          padding: '24px 0',
+          cursor: 'pointer',
+          color: 'inherit',
+          display: 'grid',
+          gridTemplateColumns: 'auto 1fr auto auto',
+          gap: 24,
+          alignItems: 'center',
+        }}
+      >
+        <span
+          className="serif tnum"
+          style={{
+            fontSize: 56,
+            fontStyle: 'italic',
+            fontWeight: 600,
+            color: 'var(--cc-gold)',
+            letterSpacing: '-0.04em',
+            lineHeight: 0.9,
+            minWidth: 110,
+          }}
+        >
+          +{v.edge.toFixed(1)}
+          <span style={{ fontSize: 24, color: 'var(--cc-muted)' }}>%</span>
+        </span>
+        <span>
+          <Eyebrow>{v.league}</Eyebrow>
+          <div
+            className="serif"
+            style={{
+              fontSize: 26,
+              fontWeight: 600,
+              lineHeight: 1.1,
+              letterSpacing: '-0.01em',
+              marginTop: 4,
+            }}
           >
-            See all {todayCount > 0 ? `${todayCount} games today` : 'matches'} →
-          </Link>
+            {v.match}
+          </div>
+        </span>
+        <span
+          style={{
+            fontFamily: 'var(--cc-mono)',
+            fontSize: 11,
+            color: 'var(--cc-muted)',
+            letterSpacing: '0.08em',
+          }}
+        >
+          ◆ {String(v.pick).toUpperCase()} · <span className="tnum">{v.conf}%</span>
+        </span>
+        <span
+          style={{
+            width: 32,
+            height: 32,
+            borderRadius: '50%',
+            border: '1px solid var(--cc-line-strong)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            fontFamily: 'var(--cc-mono)',
+            color: 'var(--cc-muted)',
+            transition: 'transform .25s',
+            transform: open ? 'rotate(45deg)' : 'none',
+          }}
+        >
+          +
+        </span>
+      </button>
+      <div
+        style={{
+          overflow: 'hidden',
+          maxHeight: open ? 200 : 0,
+          transition: 'max-height .35s cubic-bezier(.2,.7,.2,1)',
+        }}
+      >
+        <div
+          style={{
+            paddingBottom: 28,
+            paddingLeft: 134,
+            display: 'grid',
+            gridTemplateColumns: '1fr 1fr 1fr',
+            gap: 28,
+          }}
+        >
+          <div>
+            <Eyebrow>Fair odds</Eyebrow>
+            <div className="serif tnum" style={{ fontSize: 28, fontStyle: 'italic', fontWeight: 600, marginTop: 4 }}>
+              {v.fairOdds.toFixed(2)}
+            </div>
+          </div>
+          <div>
+            <Eyebrow>Book odds</Eyebrow>
+            <div
+              className="serif tnum"
+              style={{ fontSize: 28, fontStyle: 'italic', fontWeight: 600, color: 'var(--cc-muted)', marginTop: 4 }}
+            >
+              {v.marketOdds.toFixed(2)}
+            </div>
+          </div>
+          <div>
+            <Eyebrow>Why</Eyebrow>
+            <div
+              style={{
+                fontFamily: 'var(--cc-serif)',
+                fontStyle: 'italic',
+                fontSize: 16,
+                lineHeight: 1.45,
+                color: 'var(--cc-text)',
+                marginTop: 4,
+              }}
+            >
+              &quot;{reasonText}&quot;
+            </div>
+          </div>
         </div>
       </div>
-    </>
+    </div>
+  )
+}
+
+function PageFooter() {
+  const today = new Date().toLocaleDateString('en-US', {
+    weekday: 'short',
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+  })
+  return (
+    <footer
+      style={{
+        maxWidth: 980,
+        margin: '48px auto 0',
+        padding: '40px 40px 0',
+        borderTop: '1px solid var(--cc-line)',
+        display: 'flex',
+        justifyContent: 'space-between',
+        fontFamily: 'var(--cc-mono)',
+        fontSize: 10,
+        letterSpacing: '0.1em',
+        color: 'var(--cc-muted)',
+        textTransform: 'uppercase',
+      }}
+    >
+      <span>CupCast · A model, not a tip sheet</span>
+      <span>{today}</span>
+    </footer>
   )
 }

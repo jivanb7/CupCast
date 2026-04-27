@@ -328,6 +328,18 @@ def _run_wc_predictions(db, scheduled, teams_by_id, leagues_by_id) -> tuple[int,
             edge_away=edge_result.edge_away if edge_result else None,
         )
 
+        # Single-sentence explanation derived from the prediction shape.
+        # Uses the same template architecture as the frontend reasoning lib.
+        try:
+            from types import SimpleNamespace
+            from services.reasoning import generate_explanation
+            pred_data["explanation_text"] = generate_explanation(
+                SimpleNamespace(**pred_data, odds_home=None, odds_draw=None, odds_away=None),
+                match,
+            )
+        except Exception as exc:
+            logger.warning("explanation_text gen failed for match %d: %s", match.id, exc)
+
         existing = existing_by_match.get(match.id)
         if existing:
             for k, v in pred_data.items():
@@ -578,6 +590,16 @@ def generate_batch_predictions(db) -> int:
                 edge_draw=edge_result.edge_draw if edge_result else None,
                 edge_away=edge_result.edge_away if edge_result else None,
             )
+
+            try:
+                from types import SimpleNamespace
+                from services.reasoning import generate_explanation
+                pred_data["explanation_text"] = generate_explanation(
+                    SimpleNamespace(**pred_data, odds_home=None, odds_draw=None, odds_away=None),
+                    match,
+                )
+            except Exception as exc:
+                logger.warning("explanation_text gen failed for match %d: %s", match.id, exc)
 
             if existing:
                 for k, v in pred_data.items():

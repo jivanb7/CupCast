@@ -21,7 +21,7 @@ from models.league import League
 from models.match import Match
 from models.model_registry import ModelRegistry
 from models.prediction import Prediction
-from schemas.prediction import ModelPerformanceResponse
+from schemas.prediction import LeagueWindowDelta, ModelPerformanceResponse
 
 router = APIRouter(prefix="/model", tags=["model"])
 
@@ -121,6 +121,46 @@ def get_model_performance(db: Session = Depends(get_db)):
         if stats["total"] > 0
     }
 
+    # Per-league rolling delta — last-7d vs prior-7d. Frontend's design has a
+    # ▲ +X / ▼ -X arrow next to each league row; this powers it.
+    today = date.today()
+    recent_cutoff = today - timedelta(days=7)
+    prior_cutoff = today - timedelta(days=14)
+    by_league_window: dict[str, dict] = {}
+    for pred, match in evaluated_preds:
+        if not match.league_id:
+            continue
+        league_obj = leagues_by_id.get(match.league_id)
+        if not league_obj:
+            continue
+        if match.match_date is None or match.match_date < prior_cutoff:
+            continue
+        bucket = "recent" if match.match_date >= recent_cutoff else "prior"
+        slot = by_league_window.setdefault(
+            league_obj.code,
+            {"recent_correct": 0, "recent_total": 0, "prior_correct": 0, "prior_total": 0},
+        )
+        slot[f"{bucket}_total"] += 1
+        if pred.was_correct:
+            slot[f"{bucket}_correct"] += 1
+
+    accuracy_by_league_window: dict[str, LeagueWindowDelta] = {}
+    for code, s in by_league_window.items():
+        rec = round(s["recent_correct"] / s["recent_total"], 4) if s["recent_total"] else None
+        pri = round(s["prior_correct"] / s["prior_total"], 4) if s["prior_total"] else None
+        delta_pp = (
+            round((rec - pri) * 100, 1)
+            if (rec is not None and pri is not None)
+            else None
+        )
+        accuracy_by_league_window[code] = LeagueWindowDelta(
+            recent=rec,
+            prior=pri,
+            delta_pp=delta_pp,
+            n_recent=s["recent_total"],
+            n_prior=s["prior_total"],
+        )
+
     # Daily accuracy breakdown (for day-by-day chart)
     daily_stats: dict[str, dict] = {}
     for pred, match in evaluated_preds:
@@ -161,6 +201,7 @@ def get_model_performance(db: Session = Depends(get_db)):
         overall_f1_macro=f1_macro,
         overall_log_loss=log_loss_val,
         accuracy_by_league=accuracy_by_league,
+        accuracy_by_league_window=accuracy_by_league_window,
         accuracy_by_date=accuracy_by_date,
         accuracy_last_30_days=accuracy_last_30,
         total_predictions=total,

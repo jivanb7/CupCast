@@ -1,57 +1,42 @@
 import { lazy, Suspense } from 'react'
-import { Routes, Route, useLocation } from 'react-router-dom'
-import Navbar from './components/layout/Navbar'
-import Footer from './components/layout/Footer'
-import LoadingSpinner from './components/ui/LoadingSpinner'
+import { Routes, Route } from 'react-router-dom'
 import Dashboard from './pages/Dashboard'
-import { ThemeProvider } from './context/ThemeContext'
-import useLenisScroll from './hooks/useLenisScroll'
 
-const MatchDetail = lazy(() => import('./pages/MatchDetail'))
 const Matches = lazy(() => import('./pages/Matches'))
+const MatchDetail = lazy(() => import('./pages/MatchDetail'))
 const WorldCup = lazy(() => import('./pages/WorldCup'))
-const ModelPerformance = lazy(() => import('./pages/ModelPerformance'))
+const Model = lazy(() => import('./pages/Model'))
+const Value = lazy(() => import('./pages/Value'))
 const About = lazy(() => import('./pages/About'))
-const ValuePicks = lazy(() => import('./pages/ValuePicks'))
 
 function PageFallback() {
   return (
-    <div className="flex justify-center pt-32">
-      <LoadingSpinner size="lg" label="Loading page" />
-    </div>
-  )
-}
-
-function AppShell() {
-  useLenisScroll()
-  // Dashboard is meant to be a single-screen landing — no footer, no scroll.
-  // Other routes still get the full disclaimer footer.
-  const isDashboard = useLocation().pathname === '/'
-  return (
-    <div className="min-h-screen cc-app-bg text-foreground flex flex-col relative">
-      <Navbar />
-      <main className="flex-1 relative">
-        <Suspense fallback={<PageFallback />}>
-          <Routes>
-            <Route path="/" element={<Dashboard />} />
-            <Route path="/matches" element={<Matches />} />
-            <Route path="/match/:matchId" element={<MatchDetail />} />
-            <Route path="/world-cup" element={<WorldCup />} />
-            <Route path="/model-performance" element={<ModelPerformance />} />
-            <Route path="/value-picks" element={<ValuePicks />} />
-            <Route path="/about" element={<About />} />
-          </Routes>
-        </Suspense>
-      </main>
-      {!isDashboard && <Footer />}
+    <div
+      className="cc-root cc-night"
+      style={{
+        minHeight: '100vh',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+      }}
+    >
+      <div className="cc-eyebrow">Loading…</div>
     </div>
   )
 }
 
 export default function App() {
   return (
-    <ThemeProvider>
-      <AppShell />
-    </ThemeProvider>
+    <Suspense fallback={<PageFallback />}>
+      <Routes>
+        <Route path="/" element={<Dashboard />} />
+        <Route path="/matches" element={<Matches />} />
+        <Route path="/match/:matchId" element={<MatchDetail />} />
+        <Route path="/world-cup" element={<WorldCup />} />
+        <Route path="/model" element={<Model />} />
+        <Route path="/value" element={<Value />} />
+        <Route path="/about" element={<About />} />
+      </Routes>
+    </Suspense>
   )
 }

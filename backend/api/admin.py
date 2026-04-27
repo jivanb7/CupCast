@@ -545,3 +545,102 @@ def refresh_league_players(
             status_code=500,
             detail=f"Player refresh failed for '{league_code}': {str(e)}",
         )
+
+
+@router.post("/explanations/backfill")
+def backfill_explanations(
+    limit: int = Query(2000, ge=1, le=20000),
+    overwrite: bool = Query(False),
+    _key: str = Depends(verify_admin_key),
+    db: Session = Depends(get_db),
+):
+    """Populate ``Prediction.explanation_text`` for rows that don't have one.
+
+    By default only fills rows where ``explanation_text IS NULL``. Pass
+    ``overwrite=true`` to rewrite every row in the batch — useful when
+    template changes ship and we want the persisted text refreshed.
+
+    ``limit`` caps the batch so we can run this incrementally against the
+    65k+ existing predictions without one giant transaction.
+    """
+    from types import SimpleNamespace
+
+    from models.league import League
+    from models.match import Match
+    from models.prediction import Prediction
+    from models.team import Team
+    from services.reasoning import generate_explanation, template_count
+
+    # Inner-join to Match so orphan predictions (FK doesn't resolve, e.g.
+    # leftover from prod dedup that didn't replay locally) are skipped
+    # cleanly instead of churning through every batch.
+    q = db.query(Prediction).join(Match, Prediction.match_id == Match.id)
+    if not overwrite:
+        q = q.filter(Prediction.explanation_text.is_(None))
+    preds = q.order_by(Prediction.id.desc()).limit(limit).all()
+    if not preds:
+        remaining_now = db.query(Prediction).filter(Prediction.explanation_text.is_(None)).count()
+        return {
+            "status": "done",
+            "templates_in_pool": template_count(),
+            "scanned": 0,
+            "written": 0,
+            "skipped_no_template_fired": 0,
+            "failed": 0,
+            "remaining_null": remaining_now,
+            "overwrite": overwrite,
+        }
+
+    # Batch-load matches + their teams + leagues so the loop is N+0 not N+3.
+    match_ids = {p.match_id for p in preds}
+    matches = db.query(Match).filter(Match.id.in_(match_ids)).all()
+    by_match_id = {m.id: m for m in matches}
+    team_ids = {m.home_team_id for m in matches} | {m.away_team_id for m in matches}
+    league_ids = {m.league_id for m in matches}
+    teams = {t.id: t for t in db.query(Team).filter(Team.id.in_(team_ids)).all()}
+    leagues = {l.id: l for l in db.query(League).filter(League.id.in_(league_ids)).all()}
+
+    def _shim(match):
+        if match is None:
+            return None
+        return SimpleNamespace(
+            id=match.id,
+            home_team=teams.get(match.home_team_id),
+            away_team=teams.get(match.away_team_id),
+            league=leagues.get(match.league_id),
+            stage=match.stage,
+            status=match.status,
+        )
+
+    written = 0
+    skipped = 0
+    failed = 0
+    for pred in preds:
+        match = by_match_id.get(pred.match_id)
+        try:
+            text = generate_explanation(pred, _shim(match))
+        except Exception:
+            failed += 1
+            continue
+        if not text:
+            skipped += 1
+            continue
+        pred.explanation_text = text
+        written += 1
+
+    if written:
+        db.commit()
+    else:
+        db.rollback()
+
+    remaining = db.query(Prediction).filter(Prediction.explanation_text.is_(None)).count()
+    return {
+        "status": "done",
+        "templates_in_pool": template_count(),
+        "scanned": len(preds),
+        "written": written,
+        "skipped_no_template_fired": skipped,
+        "failed": failed,
+        "remaining_null": remaining,
+        "overwrite": overwrite,
+    }
