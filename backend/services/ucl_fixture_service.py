@@ -228,6 +228,9 @@ def _parse_fixture(raw: dict) -> Optional[dict]:
             "home_goals": home_goals,
             "away_goals": away_goals,
             "result": result,
+            # Persist the API-Football fixture ID so the predictions service can
+            # skip the flaky team-name resolver entirely for UCL rows.
+            "api_football_id": fixture.get("id"),
         }
     except Exception as exc:
         logger.warning("UCL: failed to parse fixture: %s — %r", exc, raw)
@@ -379,6 +382,8 @@ def seed_ucl_fixtures_to_db(db: Session) -> int:
         home_name = fx["home_team"]
         away_name = fx["away_team"]
 
+        api_football_id = fx.get("api_football_id")
+
         # Check for existing match (dedup guard)
         existing = (
             db.query(Match)
@@ -393,6 +398,9 @@ def seed_ucl_fixtures_to_db(db: Session) -> int:
             # Verify away team also matches before calling it a true duplicate
             away_team_obj = db.query(Team).filter_by(id=existing.away_team_id).first()
             if away_team_obj and away_team_obj.canonical_name == away_name:
+                # Backfill api_football_id if we now have it and the row is missing it
+                if api_football_id is not None and existing.api_football_id is None:
+                    existing.api_football_id = api_football_id
                 skipped += 1
                 continue
 
@@ -430,6 +438,7 @@ def seed_ucl_fixtures_to_db(db: Session) -> int:
             tournament=fx.get("round", "UEFA Champions League"),
             match_importance="knockout",
             status="scheduled",
+            api_football_id=api_football_id,
         )
         db.add(match)
         seeded += 1

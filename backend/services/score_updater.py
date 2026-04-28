@@ -335,6 +335,24 @@ def update_scores(db: Session) -> dict:
                     or prev_result != result
                 )
 
+                # Guard: refuse to finalize any match that has no kickoff_time.
+                # A NULL kickoff_time is the hallmark of a placeholder-seeded
+                # fixture row that was never properly matched to a live feed
+                # event. Finalizing it would lock in a bogus score (typically
+                # 0-0) against a match that hasn't been played yet.
+                if match.kickoff_time is None:
+                    logger.warning(
+                        "score_updater[csv]: refusing to finalize match %d "
+                        "(%s vs %s on %s): kickoff_time is NULL — "
+                        "row is likely a placeholder-seeded fixture, not a "
+                        "finished match",
+                        match.id,
+                        home_name,
+                        away_name,
+                        match_date,
+                    )
+                    continue
+
                 match.home_goals = home_goals
                 match.away_goals = away_goals
                 match.result = result
@@ -601,13 +619,33 @@ def update_scores_from_live_api(db: Session, run_id: Optional[str] = None) -> di
             match.result = result
             match.updated_at = _utc_now_naive()
             if past_full_time:
-                match.status = "completed"
-                # Evaluate predictions only once we trust the FINISHED signal.
-                predictions = db.query(Prediction).filter(Prediction.match_id == match.id).all()
-                for pred in predictions:
-                    pred.was_correct = (pred.predicted_result == result)
-                stats["updated"] += 1
-                logger.info("Live API: completed %s %d-%d %s", home_name, home_goals, away_goals, away_name)
+                # Guard: refuse to finalize any match that has no kickoff_time.
+                # The past_full_time check above already requires kickoff_time to
+                # be non-NULL (it returns False when kickoff_time is None), but
+                # this explicit check makes the protection unconditional and
+                # self-documenting — if the guard logic above ever changes, this
+                # second layer still blocks the bogus finalization.
+                if match.kickoff_time is None:
+                    logger.warning(
+                        "score_updater[live-api]: refusing to finalize match %d "
+                        "(%s vs %s on %s): kickoff_time is NULL — "
+                        "row is likely a placeholder-seeded fixture, not a "
+                        "finished match",
+                        match.id,
+                        home_name,
+                        away_name,
+                        match.match_date,
+                    )
+                    # Do not continue to next iteration — still update the score
+                    # in-progress so it's visible, just don't flip to completed.
+                else:
+                    match.status = "completed"
+                    # Evaluate predictions only once we trust the FINISHED signal.
+                    predictions = db.query(Prediction).filter(Prediction.match_id == match.id).all()
+                    for pred in predictions:
+                        pred.was_correct = (pred.predicted_result == result)
+                    stats["updated"] += 1
+                    logger.info("Live API: completed %s %d-%d %s", home_name, home_goals, away_goals, away_name)
             else:
                 logger.info(
                     "Live API: FINISHED too early for %s vs %s (kickoff %s) — score synced, status left 'live'",
@@ -841,6 +879,26 @@ def update_scores_from_espn(
                     kickoff_time = None
                     if "T" in event_date_iso and len(event_date_iso) >= 16:
                         kickoff_time = event_date_iso[11:16]
+
+                    # Guard: only create as 'completed' if we have a kickoff
+                    # time from ESPN.  Without it the new row would carry the
+                    # hallmark pattern of a corrupted finalization
+                    # (kickoff_time IS NULL + status='completed'), which is
+                    # exactly the class of row this audit/cleanup was written
+                    # to catch.  Create as 'scheduled' instead so it can be
+                    # re-evaluated later when the full event data is available.
+                    if kickoff_time is None:
+                        logger.warning(
+                            "score_updater[espn:%s]: skipping creation of "
+                            "missing match %s vs %s on %s — ESPN event has "
+                            "no time component in date field (%r), would "
+                            "produce a NULL-kickoff completed row",
+                            espn_slug, home_name, away_name,
+                            event_date_str, event_date_iso,
+                        )
+                        stats["skipped"] += 1
+                        continue
+
                     new_match = Match(
                         home_team_id=home_id,
                         away_team_id=away_id,
@@ -882,6 +940,26 @@ def update_scores_from_espn(
                             continue
 
                 if match is not None:
+                    # Guard: refuse to finalize any match that has no
+                    # kickoff_time. ESPN's time guard above uses
+                    # event_date_iso (the event timestamp) rather than
+                    # match.kickoff_time, so it doesn't implicitly protect
+                    # NULL-kickoff rows the way the FD.org past_full_time
+                    # check does. This explicit guard closes that gap.
+                    if match.kickoff_time is None:
+                        logger.warning(
+                            "score_updater[espn:%s]: refusing to finalize "
+                            "match %d (%s vs %s on %s): kickoff_time is NULL "
+                            "— row is likely a placeholder-seeded fixture, "
+                            "not a finished match",
+                            espn_slug,
+                            match.id,
+                            home_name,
+                            away_name,
+                            event_date_str,
+                        )
+                        continue
+
                     # Already-current short-circuit: spares us from rewriting
                     # 90% of rows on every cron tick.
                     if (

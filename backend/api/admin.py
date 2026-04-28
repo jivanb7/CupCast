@@ -676,6 +676,169 @@ def audit_team_crests(
     return {"status": "done", "fixed": fixed, "skipped": skipped}
 
 
+@router.post("/matches/cleanup-bogus-finalized")
+def cleanup_bogus_finalized(
+    days_back: int = Query(60, ge=1, le=365),
+    dry_run: bool = Query(False),
+    _key: str = Depends(verify_admin_key),
+    db: Session = Depends(get_db),
+):
+    """Revert matches that were prematurely finalized with hallmark bogus scores.
+
+    Targets three classes of corrupt rows (within the ``days_back`` window):
+      - Null-kickoff 0-0 completed  (primary hallmark — placeholder never played)
+      - Future date + completed     (logically impossible)
+      - Null-kickoff completed, any score (broader suspect set)
+
+    For each match found:
+      - Sets status='scheduled', home_goals=NULL, away_goals=NULL, result=NULL
+      - Sets was_correct=NULL on every linked Prediction row so they are no
+        longer counted toward rolling accuracy until the match grades correctly.
+
+    All writes happen in a single transaction; any error triggers a full rollback.
+    Pass ``dry_run=true`` to see what WOULD be reverted without writing anything.
+    """
+    from models.league import League
+    from models.match import Match
+    from models.prediction import Prediction
+    from models.team import Team
+
+    today = datetime.now(timezone.utc).date()
+    now_naive = datetime.now(timezone.utc).replace(tzinfo=None)
+    cutoff = today - timedelta(days=days_back)
+
+    # Gather all three classes.  Use a set to deduplicate (Class A ⊆ Class C).
+    suspect_ids: set[int] = set()
+
+    # Class A: null-kickoff 0-0 completed within window
+    class_a = (
+        db.query(Match)
+        .filter(
+            Match.status == "completed",
+            Match.kickoff_time == None,  # noqa: E711
+            Match.home_goals == 0,
+            Match.away_goals == 0,
+            Match.match_date >= cutoff,
+        )
+        .all()
+    )
+    for m in class_a:
+        suspect_ids.add(m.id)
+
+    # Class B: future date + completed (no date window needed — always wrong)
+    class_b = (
+        db.query(Match)
+        .filter(
+            Match.status == "completed",
+            Match.match_date > today,
+        )
+        .all()
+    )
+    for m in class_b:
+        suspect_ids.add(m.id)
+
+    # Class C: null-kickoff completed within window (any score — superset of A)
+    class_c = (
+        db.query(Match)
+        .filter(
+            Match.status == "completed",
+            Match.kickoff_time == None,  # noqa: E711
+            Match.match_date >= cutoff,
+        )
+        .all()
+    )
+    for m in class_c:
+        suspect_ids.add(m.id)
+
+    if not suspect_ids:
+        return {
+            "status": "done",
+            "matches_reverted": 0,
+            "predictions_uncorrected": 0,
+            "dry_run": dry_run,
+            "matches": [],
+        }
+
+    # Fetch all suspect matches in one query for the response payload and writes.
+    suspect_matches = (
+        db.query(Match)
+        .filter(Match.id.in_(suspect_ids))
+        .all()
+    )
+
+    # Build team + league caches to avoid N+1 in the response payload.
+    team_ids = {m.home_team_id for m in suspect_matches} | {m.away_team_id for m in suspect_matches}
+    league_ids = {m.league_id for m in suspect_matches}
+    teams_by_id = {t.id: t for t in db.query(Team).filter(Team.id.in_(team_ids)).all()}
+    leagues_by_id = {lg.id: lg for lg in db.query(League).filter(League.id.in_(league_ids)).all()}
+
+    def _tname(tid):
+        t = teams_by_id.get(tid)
+        return t.canonical_name if t else f"team#{tid}"
+
+    def _lcode(lid):
+        lg = leagues_by_id.get(lid)
+        return lg.code if lg else f"league#{lid}"
+
+    match_summaries = [
+        {
+            "match_id": m.id,
+            "home_team": _tname(m.home_team_id),
+            "away_team": _tname(m.away_team_id),
+            "league_code": _lcode(m.league_id),
+            "match_date": m.match_date.isoformat() if m.match_date else None,
+            "score_before": f"{m.home_goals}-{m.away_goals}",
+            "result_before": m.result,
+        }
+        for m in suspect_matches
+    ]
+
+    # Count predictions that will be un-corrected.
+    predictions_to_clear = (
+        db.query(Prediction)
+        .filter(Prediction.match_id.in_(suspect_ids))
+        .all()
+    )
+    predictions_count = len(predictions_to_clear)
+
+    if dry_run:
+        return {
+            "status": "done",
+            "matches_reverted": len(suspect_matches),
+            "predictions_uncorrected": predictions_count,
+            "dry_run": True,
+            "matches": match_summaries,
+        }
+
+    # Apply within a single transaction — rollback on any error.
+    try:
+        for m in suspect_matches:
+            m.status = "scheduled"
+            m.home_goals = None
+            m.away_goals = None
+            m.result = None
+            m.updated_at = now_naive
+
+        for pred in predictions_to_clear:
+            pred.was_correct = None
+
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Cleanup transaction failed and was rolled back: {exc}",
+        )
+
+    return {
+        "status": "done",
+        "matches_reverted": len(suspect_matches),
+        "predictions_uncorrected": predictions_count,
+        "dry_run": False,
+        "matches": match_summaries,
+    }
+
+
 @router.post("/explanations/backfill")
 def backfill_explanations(
     limit: int = Query(2000, ge=1, le=20000),

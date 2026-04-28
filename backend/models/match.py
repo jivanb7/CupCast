@@ -69,6 +69,13 @@ class Match(Base):
     stage = Column(String(20))              # 'group', 'r32', 'r16', 'qf', 'sf', 'final', '3rd-place'
     group_label = Column(String(2))         # 'A'–'L' for WC group stage
     bracket_position = Column(SmallInteger) # knockout slot index (1–32 for R32, etc.)
+    # api_football_id: API-Football fixture ID, populated at seed time for rows
+    # sourced from API-Football (UCL, odds-injected matches, etc.). NULL for
+    # legacy rows seeded from football-data.co.uk CSV or Football-Data.org.
+    # Used by api_football_predictions_service as a fast-path to skip the
+    # flaky team-name resolver. Not unique — NULL rows from CSV ingest must not
+    # conflict, and the non-unique index is sufficient for the lookup pattern.
+    api_football_id = Column(Integer, nullable=True)
     created_at = Column(DateTime, server_default=func.now())
     # updated_at: bumped whenever score_updater (or admin revalidation) writes to
     # this row. Used to decide whether a 'completed' match is still inside the

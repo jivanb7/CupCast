@@ -736,10 +736,31 @@ class LiveScoreService:
                     # same match) revert it to 'live'. Only demote on first
                     # transition or when we're certain the game is still in play.
                     if is_finished:
-                        db_match.status = "completed"
-                        # Match is over — clear the live ticker so completed
-                        # cards don't carry a stale "67'" badge.
-                        db_match.current_minute = None
+                        # Guard: refuse to finalize a match with no kickoff_time.
+                        # Such rows are placeholder-seeded fixtures that were never
+                        # properly matched to a live feed event; locking in a
+                        # live-ticker score as the "final" result would produce
+                        # exactly the bogus-finalization pattern we're trying to
+                        # eliminate (kickoff_time IS NULL + status='completed').
+                        if db_match.kickoff_time is None:
+                            import logging as _log
+                            _log.getLogger(__name__).warning(
+                                "live_score_service: refusing to finalize match %d "
+                                "(%s vs %s on %s): kickoff_time is NULL — "
+                                "row is likely a placeholder-seeded fixture, not a "
+                                "finished match",
+                                db_match.id,
+                                db_match.home_team_id,
+                                db_match.away_team_id,
+                                db_match.match_date,
+                            )
+                            # Do NOT flip to completed; let the row stay 'live'
+                            # so the cleanup endpoint and audit script catch it.
+                        else:
+                            db_match.status = "completed"
+                            # Match is over — clear the live ticker so completed
+                            # cards don't carry a stale "67'" badge.
+                            db_match.current_minute = None
                     elif not was_completed:
                         db_match.status = "live"
 
@@ -767,7 +788,10 @@ class LiveScoreService:
                     # Evaluate predictions only on the *transition* into completed.
                     # Combined with the time guard above, this ensures the "Correct"/
                     # "Wrong" badge only appears once the game has genuinely ended.
-                    if is_finished and not was_completed:
+                    # Also guard against NULL kickoff_time rows (same as above —
+                    # we never flip them to 'completed', so predictions must stay
+                    # unevaluated until the cleanup + proper finalization happens).
+                    if is_finished and not was_completed and db_match.kickoff_time is not None:
                         preds = db.query(Prediction).filter(
                             Prediction.match_id == db_match.id
                         ).all()
@@ -937,6 +961,23 @@ class LiveScoreService:
                             still_live = True
                             break
                     if not still_live:
+                        # Guard: refuse to finalize a match with no kickoff_time.
+                        # A stale 'live' row with NULL kickoff_time is likely a
+                        # placeholder-seeded fixture that somehow entered the live
+                        # state without proper kickoff data; treating it as finished
+                        # would produce a bogus 'completed' row.
+                        if stale.kickoff_time is None:
+                            logger.warning(
+                                "live_score_service: refusing to finalize stale "
+                                "live match %d (home_id=%d away_id=%d on %s): "
+                                "kickoff_time is NULL — skipping finalization",
+                                stale.id,
+                                stale.home_team_id,
+                                stale.away_team_id,
+                                stale.match_date,
+                            )
+                            continue
+
                         # Game is over — finalize it
                         if stale.home_goals > stale.away_goals:
                             result = "H"

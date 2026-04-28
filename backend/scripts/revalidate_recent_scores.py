@@ -291,6 +291,29 @@ def revalidate(db: Session, days: int = DEFAULT_DAYS, dry_run: bool = False) -> 
                 api_by_match_id[db_match.id] = fx
 
         for match in match_group:
+            # Guard: a 'completed' match with NULL kickoff_time is the hallmark
+            # of a corrupted finalization (placeholder-seeded fixture that was
+            # never properly matched to a live feed event).  Trusting it as a
+            # real completed result and trying to reconcile it against
+            # API-Football would produce misleading corrections — the API won't
+            # even agree on the score because the match hasn't been played.
+            # Treat it as suspect, log a warning, and skip it here.  The
+            # /admin/matches/cleanup-bogus-finalized endpoint is the right tool
+            # to revert these rows back to 'scheduled'.
+            if match.kickoff_time is None:
+                logger.warning(
+                    "revalidate: skipping match %d (%s on %s) — status='completed' "
+                    "but kickoff_time is NULL; likely a placeholder-seeded fixture "
+                    "finalized in error. Use /admin/matches/cleanup-bogus-finalized "
+                    "to revert it.",
+                    match.id,
+                    league_code,
+                    match.match_date,
+                )
+                summary.setdefault("skipped_null_kickoff", 0)
+                summary["skipped_null_kickoff"] += 1
+                continue
+
             summary["total_checked"] += 1
             fx = api_by_match_id.get(match.id)
             if fx is None:

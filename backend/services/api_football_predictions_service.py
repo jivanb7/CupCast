@@ -315,18 +315,30 @@ def refresh_for_upcoming(db: Session, days_ahead: int = 7) -> dict[str, Any]:
         "errors": 0,
     }
 
+    counts = {"from_db": 0, "from_resolver": 0, "failed": 0}
+
     for i, (match, league) in enumerate(matches, start=1):
         if i % _LOG_EVERY_N == 0:
             logger.info(
                 "apifp refresh_for_upcoming: %d/%d processed "
-                "(fetched=%d skipped=%d errors=%d)",
+                "(fetched=%d skipped=%d errors=%d) [id_src: db=%d resolver=%d failed=%d]",
                 i, len(matches),
                 summary["fetched"],
                 summary["skipped_no_fixture_id"] + summary["skipped_no_data"],
                 summary["errors"],
+                counts["from_db"], counts["from_resolver"], counts["failed"],
             )
 
-        fixture_id = _resolve_fixture_id(db, match, league, LEAGUE_API_FOOTBALL_IDS)
+        if match.api_football_id is not None:
+            fixture_id = match.api_football_id
+            counts["from_db"] += 1
+        else:
+            fixture_id = _resolve_fixture_id_via_teamnames(db, match, league, LEAGUE_API_FOOTBALL_IDS)
+            if fixture_id is not None:
+                counts["from_resolver"] += 1
+            else:
+                counts["failed"] += 1
+
         if fixture_id is None:
             summary["skipped_no_fixture_id"] += 1
             time.sleep(_INTER_CALL_SLEEP)
@@ -340,6 +352,7 @@ def refresh_for_upcoming(db: Session, days_ahead: int = 7) -> dict[str, Any]:
 
         time.sleep(_INTER_CALL_SLEEP)
 
+    summary["fixture_id_source"] = counts
     logger.info("apifp refresh_for_upcoming complete: %s", summary)
     return summary
 
@@ -397,18 +410,30 @@ def backfill_for_recent(
         "errors": 0,
     }
 
+    counts = {"from_db": 0, "from_resolver": 0, "failed": 0}
+
     for i, (match, league) in enumerate(matches, start=1):
         if i % _LOG_EVERY_N == 0:
             logger.info(
                 "apifp backfill_for_recent: %d/%d processed "
-                "(fetched=%d skipped=%d errors=%d)",
+                "(fetched=%d skipped=%d errors=%d) [id_src: db=%d resolver=%d failed=%d]",
                 i, len(matches),
                 summary["fetched"],
                 summary["skipped_no_fixture_id"] + summary["skipped_no_data"],
                 summary["errors"],
+                counts["from_db"], counts["from_resolver"], counts["failed"],
             )
 
-        fixture_id = _resolve_fixture_id(db, match, league, LEAGUE_API_FOOTBALL_IDS)
+        if match.api_football_id is not None:
+            fixture_id = match.api_football_id
+            counts["from_db"] += 1
+        else:
+            fixture_id = _resolve_fixture_id_via_teamnames(db, match, league, LEAGUE_API_FOOTBALL_IDS)
+            if fixture_id is not None:
+                counts["from_resolver"] += 1
+            else:
+                counts["failed"] += 1
+
         if fixture_id is None:
             summary["skipped_no_fixture_id"] += 1
             time.sleep(_INTER_CALL_SLEEP)
@@ -422,6 +447,7 @@ def backfill_for_recent(
 
         time.sleep(_INTER_CALL_SLEEP)
 
+    summary["fixture_id_source"] = counts
     logger.info("apifp backfill_for_recent complete: %s", summary)
     return summary
 
@@ -436,13 +462,17 @@ def backfill_for_recent(
 _fixture_cache: dict[tuple, list[dict]] = {}
 
 
-def _resolve_fixture_id(
+def _resolve_fixture_id_via_teamnames(
     db: Session,
     match: Any,
     league: Any,
     league_id_map: dict[str, int],
 ) -> Optional[int]:
-    """Map an internal Match row to an API-Football fixture_id.
+    """Fallback: map an internal Match row to an API-Football fixture_id via
+    team-name resolution against the /fixtures endpoint.
+
+    Only called when match.api_football_id is NULL (legacy rows from
+    football-data.co.uk CSV ingest, or rows seeded before this column existed).
 
     Strategy:
       1. Look up league.code in LEAGUE_API_FOOTBALL_IDS.
@@ -452,10 +482,8 @@ def _resolve_fixture_id(
          (same fuzzy resolver used by revalidate_recent_scores).
       4. Return the matched fixture's API-Football id, or None if unresolved.
 
-    This approach avoids adding an api_football_fixture_id column to matches
-    (which would require a migration + backfill of ~30k rows). The team-name
-    resolver already handles the canonical/alias/short-name fuzzy logic used
-    across the codebase.
+    Callers prefer match.api_football_id when non-NULL; this resolver is the
+    last resort for rows that predate the api_football_id column.
     """
     api_league_id = league_id_map.get(league.code)
     if api_league_id is None:

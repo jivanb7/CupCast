@@ -440,6 +440,13 @@ def refresh_odds_for_league(
         if not match:
             continue
 
+        # Opportunistically backfill api_football_id. The odds service already
+        # holds the confirmed fixture ID at this point — stamping it here means
+        # domestic-league rows (EPL, La Liga, etc.) will accumulate their IDs
+        # over normal odds-refresh runs without a dedicated backfill pass.
+        if match.api_football_id is None:
+            match.api_football_id = fx_id
+
         oh, od, oa = hda
         n = _apply_odds_to_predictions(db, match, oh, od, oa)
         if n:

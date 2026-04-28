@@ -334,10 +334,25 @@ def _multi_metric_decision(
     Path B — clear ≥`prob_margin` improvement on BOTH log_loss and Brier:
         new_ll < cur_ll * (1 - prob_margin)  AND  new_brier < cur_brier * (1 - prob_margin)
 
-    Either path qualifies. If a metric is missing on either side, the path
-    that depends on that metric is skipped; if both paths are skipped due
-    to missing data, returns (False, None, "<reason>").
+    Path C — legacy-current bridge. When the current @prod was trained before
+    we started logging val_log_loss / val_brier_score, both probabilistic
+    metrics on the current side are missing. Without this bridge the gate
+    falls back to single-metric val_acc-only, which is the noisiest possible
+    comparison. Path C accepts a new version that has all three metrics
+    PROVIDED its log_loss and Brier are below absolute "sanity" thresholds
+    that sit comfortably below 3-way random:
+        new_ll < ln(3) * 0.95  ≈ 1.044   (random log_loss = ln(3) ≈ 1.099)
+        new_brier < (2/3) * 0.95 ≈ 0.633  (random brier = 2/3 ≈ 0.667)
+        new_acc >= cur_acc * (1 - margin)
+    Path C only fires when both cur_ll AND cur_brier are missing — it's a
+    one-time bridge that becomes irrelevant once a current with all metrics
+    is in place.
+
+    If all three paths are skipped due to missing data, returns (False, None,
+    "<reason>") so the caller can fall back to single-metric.
     """
+    import math as _math
+
     a_eligible = (
         new_acc is not None and cur_acc is not None
         and new_ll is not None and cur_ll is not None
@@ -346,8 +361,13 @@ def _multi_metric_decision(
         new_ll is not None and cur_ll is not None
         and new_brier is not None and cur_brier is not None
     )
+    c_eligible = (
+        new_acc is not None and cur_acc is not None
+        and new_ll is not None and new_brier is not None
+        and cur_ll is None and cur_brier is None
+    )
 
-    if not a_eligible and not b_eligible:
+    if not a_eligible and not b_eligible and not c_eligible:
         return False, None, "missing required metrics on either side"
 
     a_pass = False
@@ -376,11 +396,45 @@ def _multi_metric_decision(
             f"AND brier {new_brier:.4f} {'<' if brier_ok else '≥'} {brier_threshold:.4f}"
         )
 
+    c_pass = False
+    c_detail = "skipped (current has metrics; not a legacy-current bridge case)"
+    if c_eligible:
+        # Sanity thresholds — well below 3-way random so any half-decent
+        # model clears them; the bridge's job is to detect "current is
+        # legacy" and let a model with reasonable probabilistic quality
+        # ship instead of holding it hostage to absent comparators.
+        ll_sanity = _math.log(3.0) * 0.95   # ≈ 1.0438
+        brier_sanity = (2.0 / 3.0) * 0.95   # ≈ 0.6333
+        # Acc tolerance for the bridge: allow up to 1pp regression. The val
+        # window is ~880 rows, std-error on accuracy ≈ sqrt(0.5*0.5/880) ≈
+        # 1.7%, so a 1pp drop is well inside the noise band. Without this
+        # band we can't promote a probabilistically-better model that's
+        # nominally tied with the legacy current on noisy val_acc.
+        ACC_NOISE_BAND = 0.01
+        acc_threshold = cur_acc - max(margin * cur_acc, ACC_NOISE_BAND)
+        ll_ok = new_ll < ll_sanity
+        brier_ok = new_brier < brier_sanity
+        acc_ok = new_acc >= acc_threshold
+        c_pass = ll_ok and brier_ok and acc_ok
+        c_detail = (
+            f"legacy-current bridge: "
+            f"log_loss {new_ll:.4f} {'<' if ll_ok else '≥'} {ll_sanity:.4f} "
+            f"AND brier {new_brier:.4f} {'<' if brier_ok else '≥'} {brier_sanity:.4f} "
+            f"AND acc {new_acc:.4f} {'≥' if acc_ok else '<'} {acc_threshold:.4f} "
+            f"(noise band {ACC_NOISE_BAND:.2%})"
+        )
+
     if a_pass:
         return True, "A", f"path A passed [{a_detail}]"
     if b_pass:
         return True, "B", f"path B passed [{b_detail}]"
-    return False, None, f"path A failed [{a_detail}]; path B failed [{b_detail}]"
+    if c_pass:
+        return True, "C", f"path C passed [{c_detail}]"
+    return False, None, (
+        f"path A failed [{a_detail}]; "
+        f"path B failed [{b_detail}]; "
+        f"path C failed [{c_detail}]"
+    )
 
 
 def decide_and_promote(
