@@ -680,15 +680,30 @@ def audit_team_crests(
 def cleanup_bogus_finalized(
     days_back: int = Query(60, ge=1, le=365),
     dry_run: bool = Query(False),
+    aggressive: bool = Query(
+        False,
+        description=(
+            "When True, ALSO revert any null-kickoff completed match "
+            "regardless of score (Class C — broader cleanup, may revert "
+            "legitimate historical results). Default False keeps the "
+            "blast radius scoped to the actual bug pattern only."
+        ),
+    ),
     _key: str = Depends(verify_admin_key),
     db: Session = Depends(get_db),
 ):
     """Revert matches that were prematurely finalized with hallmark bogus scores.
 
-    Targets three classes of corrupt rows (within the ``days_back`` window):
-      - Null-kickoff 0-0 completed  (primary hallmark — placeholder never played)
-      - Future date + completed     (logically impossible)
-      - Null-kickoff completed, any score (broader suspect set)
+    Targets two classes of corrupt rows by default (within ``days_back``):
+      - Class A: Null-kickoff 0-0 completed  (the bug pattern — placeholder
+        row that was finalized as 0-0 D before it actually played)
+      - Class B: Future date + completed     (logically impossible)
+
+    With ``aggressive=true``, also reverts:
+      - Class C: Null-kickoff completed, any score (broader suspect set —
+        catches matches whose seed missed the kickoff_time field). DANGER:
+        this can revert legitimate historical results that simply have a
+        missing kickoff_time. Only use after manually inspecting a dry-run.
 
     For each match found:
       - Sets status='scheduled', home_goals=NULL, away_goals=NULL, result=NULL
@@ -707,10 +722,9 @@ def cleanup_bogus_finalized(
     now_naive = datetime.now(timezone.utc).replace(tzinfo=None)
     cutoff = today - timedelta(days=days_back)
 
-    # Gather all three classes.  Use a set to deduplicate (Class A ⊆ Class C).
     suspect_ids: set[int] = set()
 
-    # Class A: null-kickoff 0-0 completed within window
+    # Class A: null-kickoff 0-0 completed within window — the actual bug.
     class_a = (
         db.query(Match)
         .filter(
@@ -725,7 +739,7 @@ def cleanup_bogus_finalized(
     for m in class_a:
         suspect_ids.add(m.id)
 
-    # Class B: future date + completed (no date window needed — always wrong)
+    # Class B: future date + completed (no date window — always wrong).
     class_b = (
         db.query(Match)
         .filter(
@@ -737,18 +751,21 @@ def cleanup_bogus_finalized(
     for m in class_b:
         suspect_ids.add(m.id)
 
-    # Class C: null-kickoff completed within window (any score — superset of A)
-    class_c = (
-        db.query(Match)
-        .filter(
-            Match.status == "completed",
-            Match.kickoff_time == None,  # noqa: E711
-            Match.match_date >= cutoff,
+    # Class C: opt-in only. Includes legitimate completed matches whose
+    # seed didn't carry kickoff_time. Most of these are real results we
+    # should NOT touch — only revert when the operator explicitly asks.
+    if aggressive:
+        class_c = (
+            db.query(Match)
+            .filter(
+                Match.status == "completed",
+                Match.kickoff_time == None,  # noqa: E711
+                Match.match_date >= cutoff,
+            )
+            .all()
         )
-        .all()
-    )
-    for m in class_c:
-        suspect_ids.add(m.id)
+        for m in class_c:
+            suspect_ids.add(m.id)
 
     if not suspect_ids:
         return {
