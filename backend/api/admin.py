@@ -676,6 +676,67 @@ def audit_team_crests(
     return {"status": "done", "fixed": fixed, "skipped": skipped}
 
 
+@router.post("/matches/{match_id}/revert-to-scheduled")
+def revert_match_to_scheduled(
+    match_id: int,
+    _key: str = Depends(verify_admin_key),
+    db: Session = Depends(get_db),
+):
+    """Revert a single match by ID back to status='scheduled' and clear its
+    score/result + dependent prediction was_correct flags.
+
+    Targeted scalpel for cases like the PSG-vs-Bayern bug (id 65439) where
+    the bulk cleanup endpoint's filters miss the row for whatever reason
+    (e.g. recent date, edge case in the SQL query). Operator passes the
+    exact match_id they want reverted; no scanning, no guessing.
+
+    Use sparingly. The kickoff_time guard added to score_updater.py +
+    live_score_service.py prevents the original bug from recurring, so
+    this endpoint should rarely be needed once the corrupt rows are
+    cleaned up.
+    """
+    from models.match import Match
+    from models.prediction import Prediction
+
+    match = db.query(Match).filter(Match.id == match_id).first()
+    if match is None:
+        raise HTTPException(status_code=404, detail=f"match {match_id} not found")
+
+    before = {
+        "status": match.status,
+        "home_goals": match.home_goals,
+        "away_goals": match.away_goals,
+        "result": match.result,
+        "kickoff_time": match.kickoff_time,
+    }
+
+    match.status = "scheduled"
+    match.home_goals = None
+    match.away_goals = None
+    match.result = None
+    match.updated_at = datetime.now(timezone.utc).replace(tzinfo=None)
+
+    preds = db.query(Prediction).filter(Prediction.match_id == match_id).all()
+    cleared = 0
+    for p in preds:
+        if p.was_correct is not None:
+            p.was_correct = None
+            cleared += 1
+
+    try:
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"revert failed: {exc}")
+
+    return {
+        "status": "done",
+        "match_id": match_id,
+        "before": before,
+        "predictions_uncorrected": cleared,
+    }
+
+
 @router.post("/matches/cleanup-bogus-finalized")
 def cleanup_bogus_finalized(
     days_back: int = Query(60, ge=1, le=365),
