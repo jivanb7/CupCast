@@ -430,7 +430,12 @@ def _multi_metric_decision(
         return True, "B", f"path B passed [{b_detail}]"
     if c_pass:
         return True, "C", f"path C passed [{c_detail}]"
-    return False, None, (
+
+    # All eligible paths failed. Use a sentinel path label "EVALUATED" so the
+    # caller distinguishes "we ran the comparison and the new model lost" from
+    # "we couldn't evaluate at all." Without this, the caller falls through to
+    # single-metric val_acc and renders the multi-metric verdict moot.
+    return False, "EVALUATED", (
         f"path A failed [{a_detail}]; "
         f"path B failed [{b_detail}]; "
         f"path C failed [{c_detail}]"
