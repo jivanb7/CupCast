@@ -40,6 +40,10 @@ class PredictionSummary(BaseModel):
     edge_home: Optional[float] = None
     edge_draw: Optional[float] = None
     edge_away: Optional[float] = None
+    # Set when is_value_pick was True in the DB but suppressed at the API layer
+    # because the model's 30-day rolling accuracy in this league is below 0.50.
+    # None means the pick was not suppressed (or was already False).
+    value_pick_gated_reason: Optional[str] = None
 
     model_config = {"from_attributes": True}
 

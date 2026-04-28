@@ -79,6 +79,27 @@ DB_TO_ML_LEAGUE = {
     "ligue1": "F1", "ucl": "UCL",
 }
 
+# Per-league weight on the bookmaker's vig-removed implied probabilities when
+# blending with raw model output. EPL/LaLiga have sharp, liquid books so we
+# trust them heavily; Serie A / Bundesliga / Ligue 1 / MLS have staler, wider
+# odds so we let the model pull more weight. Lower English tiers sit in the
+# middle. UCL is sharp on the marquee fixtures but slightly less so deep in
+# the bracket. See generate_batch_predictions for the blend itself.
+BOOK_WEIGHT_BY_LEAGUE = {
+    "E0": 0.85,    # English Premier League — sharp, liquid
+    "SP1": 0.85,   # La Liga — sharp
+    "I1": 0.65,    # Serie A — staler odds
+    "D1": 0.65,    # Bundesliga — staler
+    "F1": 0.65,    # Ligue 1 — staler
+    "MLS": 0.65,   # MLS — thin market
+    "UCL": 0.80,   # UEFA Champions League — sharp on big teams
+    "E1": 0.70,    # English Championship
+    "E2": 0.70,    # English League One
+    "E3": 0.70,    # English League Two
+    "EC": 0.65,    # National League
+}
+DEFAULT_BOOK_WEIGHT = 0.75
+
 # Top-5 specialist routing. The training pipeline (ml/run_pipeline.py →
 # run_training("club_top5")) now retrains cupcast-club-top5-model on the
 # same 87-feature schema as the general cupcast-club-model on every run.
@@ -592,6 +613,10 @@ def generate_batch_predictions(db) -> int:
     )
     existing_by_match = {p.match_id: p for p in _existing_preds}
 
+    # Track which leagues we've already logged a book-weight for so the per-
+    # league weight is announced once per batch run instead of once per match.
+    seen_leagues: set[str] = set()
+
     for idx, (match, ml_league_code) in match_index_map.items():
         if idx >= len(upcoming_features):
             skipped += 1
@@ -664,13 +689,19 @@ def generate_batch_predictions(db) -> int:
             row_odds_h, row_odds_d, row_odds_a = odds_by_match.get(
                 match.id, (None, None, None)
             )
-            # 0.85 book / 0.15 model — heavy book anchor per user direction
-            # ("we should heavily be utilizing the bookmaker odds"). At this
-            # weight Espanyol-vs-Madrid blend goes Real-Madrid 47% (correct
-            # call) and Bayern-vs-Heidenheim goes Bayern 73% — matches reality
-            # while still letting model signals like Elo + key-player
-            # availability shift the call by ~5–10pp from the book.
-            BOOK_WEIGHT = 0.85
+            # Per-league book weight (see BOOK_WEIGHT_BY_LEAGUE at module top).
+            # EPL/LaLiga keep the original 0.85 heavy anchor — those books are
+            # sharp and the model alone produced bad extremes (Espanyol > Real
+            # Madrid). Stale-market leagues (Serie A, Bundesliga, Ligue 1, MLS)
+            # drop to 0.65 so the model can pull harder, since the book itself
+            # mis-prices those games and dragging toward it costs us accuracy.
+            BOOK_WEIGHT = BOOK_WEIGHT_BY_LEAGUE.get(ml_league_code, DEFAULT_BOOK_WEIGHT)
+            if ml_league_code not in seen_leagues:
+                logger.info(
+                    "book-blend weight for league %s: %.2f (model weight %.2f)",
+                    ml_league_code, BOOK_WEIGHT, 1.0 - BOOK_WEIGHT,
+                )
+                seen_leagues.add(ml_league_code)
             try:
                 if (
                     row_odds_h and row_odds_d and row_odds_a

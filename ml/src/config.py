@@ -189,6 +189,14 @@ CLUB_FEATURES = [
     # road-warrior asymmetry that single-Elo can't express. Added v9.
     "home_pi_h", "home_pi_a", "away_pi_h", "away_pi_a",
     "pi_rating_diff_direct", "pi_rating_diff_overall",
+    # API-Football's own proprietary model probabilities, merged in as a
+    # meta-feature. Their model uses lineups, xG, expected formation, and
+    # other signals we don't ingest ourselves — feeding their probs into
+    # ours captures that signal indirectly. Added v10 (2026-04-28).
+    # has_api_pred = 1 only when all three probs were resolved; training
+    # rows from pre-2025 historical CSVs will mostly be 0, so the model
+    # learns to discount the api_pred_* block when has_api_pred=0.
+    "api_pred_home", "api_pred_draw", "api_pred_away", "has_api_pred",
 ]
 
 # ---------------------------------------------------------------------------

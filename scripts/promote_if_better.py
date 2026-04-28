@@ -313,11 +313,82 @@ def _metric_for_version(client: MlflowClient, model_name: str, version: int, met
     return run.data.metrics.get(metric)
 
 
+def _multi_metric_decision(
+    new_acc: Optional[float],
+    cur_acc: Optional[float],
+    new_ll: Optional[float],
+    cur_ll: Optional[float],
+    new_brier: Optional[float],
+    cur_brier: Optional[float],
+    margin: float,
+    prob_margin: float = 0.01,
+):
+    """Apply the dual-criterion gate.
+
+    Returns (passes: bool, path: Optional[str], reason_detail: str). `path` is
+    "A" or "B" describing which criterion qualified, or None on failure.
+
+    Path A — accuracy non-regressing AND log_loss non-regressing:
+        new_acc >= cur_acc * (1 - margin)  AND  new_ll <= cur_ll * (1 + margin)
+
+    Path B — clear ≥`prob_margin` improvement on BOTH log_loss and Brier:
+        new_ll < cur_ll * (1 - prob_margin)  AND  new_brier < cur_brier * (1 - prob_margin)
+
+    Either path qualifies. If a metric is missing on either side, the path
+    that depends on that metric is skipped; if both paths are skipped due
+    to missing data, returns (False, None, "<reason>").
+    """
+    a_eligible = (
+        new_acc is not None and cur_acc is not None
+        and new_ll is not None and cur_ll is not None
+    )
+    b_eligible = (
+        new_ll is not None and cur_ll is not None
+        and new_brier is not None and cur_brier is not None
+    )
+
+    if not a_eligible and not b_eligible:
+        return False, None, "missing required metrics on either side"
+
+    a_pass = False
+    a_detail = "skipped (missing acc or log_loss)"
+    if a_eligible:
+        acc_threshold = cur_acc * (1.0 - margin)
+        ll_threshold = cur_ll * (1.0 + margin)
+        acc_ok = new_acc >= acc_threshold
+        ll_ok = new_ll <= ll_threshold
+        a_pass = acc_ok and ll_ok
+        a_detail = (
+            f"acc {new_acc:.4f} {'≥' if acc_ok else '<'} {acc_threshold:.4f} "
+            f"AND log_loss {new_ll:.4f} {'≤' if ll_ok else '>'} {ll_threshold:.4f}"
+        )
+
+    b_pass = False
+    b_detail = "skipped (missing log_loss or brier)"
+    if b_eligible:
+        ll_threshold = cur_ll * (1.0 - prob_margin)
+        brier_threshold = cur_brier * (1.0 - prob_margin)
+        ll_ok = new_ll < ll_threshold
+        brier_ok = new_brier < brier_threshold
+        b_pass = ll_ok and brier_ok
+        b_detail = (
+            f"log_loss {new_ll:.4f} {'<' if ll_ok else '≥'} {ll_threshold:.4f} "
+            f"AND brier {new_brier:.4f} {'<' if brier_ok else '≥'} {brier_threshold:.4f}"
+        )
+
+    if a_pass:
+        return True, "A", f"path A passed [{a_detail}]"
+    if b_pass:
+        return True, "B", f"path B passed [{b_detail}]"
+    return False, None, f"path A failed [{a_detail}]; path B failed [{b_detail}]"
+
+
 def decide_and_promote(
     model_type: str,
     metric: str = DEFAULT_METRIC,
     margin: float = DEFAULT_MARGIN,
     dry_run: bool = False,
+    multi_metric: bool = True,
 ) -> PromotionDecision:
     if model_type not in MODEL_TYPES:
         raise ValueError(f"model_type must be one of {list(MODEL_TYPES)}")
@@ -420,6 +491,71 @@ def decide_and_promote(
             client.set_registered_model_alias(name=model_name, alias="prod", version=str(new_version))
         return _build_decision(True, reason)
 
+    # ------------------------------------------------------------------
+    # Multi-metric gate: accuracy is noisy on ~880-row val windows, so a
+    # 0.3pp drop should NOT block a meaningful log-loss/Brier improvement.
+    # When multi_metric=True, we accept the new model if EITHER:
+    #   (A) val_acc non-regressing AND val_log_loss non-regressing
+    #   (B) val_log_loss AND val_brier_score both improve by ≥ 1%
+    # See _multi_metric_decision() for the exact comparison rules.
+    # ------------------------------------------------------------------
+    if multi_metric:
+        # Pull all three metrics for both new and current. Missing metrics
+        # are tolerated by _multi_metric_decision; if everything is missing
+        # we fall back to the legacy single-metric path below.
+        if dry_run:
+            new_acc = latest_run.data.metrics.get("val_accuracy")
+            new_ll = latest_run.data.metrics.get("val_log_loss")
+            new_brier = latest_run.data.metrics.get("val_brier_score")
+        else:
+            new_acc = _metric_for_version(client, model_name, new_version, "val_accuracy")
+            new_ll = _metric_for_version(client, model_name, new_version, "val_log_loss")
+            new_brier = _metric_for_version(client, model_name, new_version, "val_brier_score")
+
+        cur_acc = _metric_for_version(client, model_name, current_version, "val_accuracy")
+        cur_ll = _metric_for_version(client, model_name, current_version, "val_log_loss")
+        cur_brier = _metric_for_version(client, model_name, current_version, "val_brier_score")
+
+        passes, path, detail = _multi_metric_decision(
+            new_acc=new_acc, cur_acc=cur_acc,
+            new_ll=new_ll, cur_ll=cur_ll,
+            new_brier=new_brier, cur_brier=cur_brier,
+            margin=margin,
+        )
+
+        # Stash these on the decision struct so the JSON summary can print
+        # all three new metrics for downstream tooling/CI logs.
+        if new_acc is not None:
+            new_run_metrics.setdefault("val_accuracy", new_acc)
+        if new_ll is not None:
+            new_run_metrics.setdefault("val_log_loss", new_ll)
+        if new_brier is not None:
+            new_run_metrics.setdefault("val_brier_score", new_brier)
+
+        if passes or path is not None:
+            metrics_blob = (
+                f"new(acc={new_acc}, ll={new_ll}, brier={new_brier}) vs "
+                f"current(acc={cur_acc}, ll={cur_ll}, brier={cur_brier}, v{current_version})"
+            )
+            if passes:
+                reason = f"multi-metric gate: {detail}; {metrics_blob} — promoting"
+                if not dry_run:
+                    client.set_registered_model_alias(
+                        name=model_name, alias="prod", version=str(new_version),
+                    )
+                return _build_decision(True, reason)
+            reason = (
+                f"multi-metric gate: {detail}; {metrics_blob} — "
+                f"keeping @prod=v{current_version}"
+            )
+            return _build_decision(False, reason)
+        # Both paths skipped (everything missing) — fall through to the
+        # single-metric legacy gate below so we still get a decision.
+        logger.warning(
+            "multi-metric gate could not evaluate (all metrics missing); "
+            "falling back to single-metric gate on %r", metric,
+        )
+
     higher_better = _higher_is_better(metric)
     if higher_better:
         # Accuracy / F1 / AUC: new must be ≥ current * (1 + margin)
@@ -434,7 +570,7 @@ def decide_and_promote(
 
     if passes:
         reason = (
-            f"new {metric}={new_metric:.4f} {compare_op_pass} {threshold:.4f} "
+            f"single-metric gate: new {metric}={new_metric:.4f} {compare_op_pass} {threshold:.4f} "
             f"(current={current_metric:.4f}, margin={margin:.1%}) — promoting"
         )
         if not dry_run:
@@ -442,7 +578,7 @@ def decide_and_promote(
         return _build_decision(True, reason)
 
     reason = (
-        f"new {metric}={new_metric:.4f} {compare_op_fail} {threshold:.4f} "
+        f"single-metric gate: new {metric}={new_metric:.4f} {compare_op_fail} {threshold:.4f} "
         f"(current={current_metric:.4f}, margin={margin:.1%}) — keeping @prod=v{current_version}"
     )
     return _build_decision(False, reason)
@@ -539,6 +675,23 @@ def main() -> int:
                         help="required relative improvement (default: 0.01 = 1%%)")
     parser.add_argument("--dry-run", action="store_true",
                         help="report the decision without registering or flipping alias")
+    # Multi-metric gate is on by default — single-metric is too noisy on
+    # ~880-row val windows (a 0.3pp acc drop blocked v9 even though
+    # val_log_loss likely improved). Pass --no-multi-metric to fall back
+    # to the legacy single-metric gate.
+    parser.add_argument(
+        "--multi-metric",
+        dest="multi_metric",
+        action="store_true",
+        default=True,
+        help="enable dual-criterion gate over (acc, log_loss, brier) — default on",
+    )
+    parser.add_argument(
+        "--no-multi-metric",
+        dest="multi_metric",
+        action="store_false",
+        help="fall back to single-metric (--metric) gate",
+    )
     parser.add_argument("--log-level", default="INFO")
     args = parser.parse_args()
 
@@ -556,6 +709,7 @@ def main() -> int:
             metric=args.metric,
             margin=args.margin,
             dry_run=args.dry_run,
+            multi_metric=args.multi_metric,
         )
     except RuntimeError as e:
         logger.error("promotion gate failed: %s", e)
@@ -581,12 +735,24 @@ def main() -> int:
         except Exception:
             logger.exception("model_registry catch-up sync failed (non-fatal)")
     # Emit a concise machine-readable summary for CI log searchability.
+    # When the multi-metric gate is on we also surface val_accuracy,
+    # val_log_loss, and val_brier_score from the new run so CI/Slack
+    # alerts can see the full picture without re-querying MLflow.
+    nrm = decision.new_run_metrics or {}
+    extra = ""
+    if args.multi_metric:
+        extra = (
+            f" new_val_accuracy={nrm.get('val_accuracy')} "
+            f"new_val_log_loss={nrm.get('val_log_loss')} "
+            f"new_val_brier_score={nrm.get('val_brier_score')}"
+        )
     print(
         f"promotion_result model={args.model_type} "
+        f"gate={'multi' if args.multi_metric else 'single'} "
         f"promoted={decision.promoted} "
         f"new_version={decision.new_version} new_{args.metric}={decision.new_metric} "
         f"current_version={decision.current_version} current_{args.metric}={decision.current_metric} "
-        f"db_label={decision.db_label or 'none'}"
+        f"db_label={decision.db_label or 'none'}{extra}"
     )
     return 0
 

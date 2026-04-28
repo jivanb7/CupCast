@@ -24,6 +24,7 @@ from models.match import Match
 from models.prediction import Prediction
 from models.team import Team
 from schemas.prediction import ValuePickResponse
+from services.league_track_record import gate_value_picks, get_league_accuracy_map
 
 router = APIRouter(prefix="/predictions", tags=["predictions"])
 
@@ -57,7 +58,20 @@ def get_value_picks(
 
     pred_match_pairs: list[tuple[Prediction, Match]] = query.all()
 
-    # Apply min_edge filter
+    # Pre-load the per-league accuracy map once (cached for 5 min).
+    accuracy_map = get_league_accuracy_map(db)
+
+    # Batch-load league objects so we have codes for the accuracy gate.
+    # We need codes before the main team/league batch load below.
+    prelim_league_ids = list({m.league_id for _, m in pred_match_pairs if m.league_id})
+    prelim_leagues_by_id = (
+        {lg.id: lg for lg in db.query(League).filter(League.id.in_(prelim_league_ids)).all()}
+        if prelim_league_ids else {}
+    )
+
+    # Apply min_edge filter and accuracy gate.
+    # Gated picks are excluded entirely from this endpoint (they are not
+    # merely suppressed — they should not appear in the value-picks list at all).
     filtered = []
     for pred, match in pred_match_pairs:
         max_edge = max(
@@ -65,8 +79,21 @@ def get_value_picks(
             abs(pred.edge_draw or 0),
             abs(pred.edge_away or 0),
         )
-        if max_edge >= min_edge:
-            filtered.append((pred, match, max_edge))
+        if max_edge < min_edge:
+            continue
+
+        league_obj = prelim_leagues_by_id.get(match.league_id) if match.league_id else None
+        league_code = league_obj.code if league_obj else None
+        effective_vp, _ = gate_value_picks(
+            is_value_pick=pred.is_value_pick or False,
+            league_code=league_code,
+            accuracy_map=accuracy_map,
+        )
+        if not effective_vp:
+            # Pick is gated — omit from this list entirely.
+            continue
+
+        filtered.append((pred, match, max_edge))
 
     # Sort by max_edge descending
     filtered.sort(key=lambda x: x[2], reverse=True)

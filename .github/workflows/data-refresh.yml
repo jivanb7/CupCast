@@ -107,6 +107,27 @@ jobs:
           PYTHONPATH: backend:ml:.
         continue-on-error: true  # availability is enrichment, not load-bearing
 
+      # Pull API-Football's own /predictions/{fixture_id} for upcoming AND
+      # the trailing 120 days of top-5 leagues + UCL. Their proprietary
+      # model uses lineups, xG, expected formation, and signals we don't
+      # ingest — feeding their three probabilities into ours as features
+      # gets us those signals indirectly. Costs ~700 API calls (1 per
+      # fixture) plus a small handful of /fixtures lookups (cached per
+      # league/season/date). Well under the 7500/day quota.
+      - name: Backfill API-Football match predictions
+        if: ${{ github.event.inputs.mode == null || github.event.inputs.mode == 'full' || github.event.inputs.mode == 'data-only' }}
+        run: |
+          python backend/scripts/refresh_api_football_predictions.py \
+            --mode upcoming --days-ahead 7
+          python backend/scripts/refresh_api_football_predictions.py \
+            --mode backfill --days-back 120 --leagues E0,SP1,I1,D1,F1,ucl
+          python backend/scripts/export_api_football_predictions.py
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          API_FOOTBALL_KEYS: ${{ secrets.API_FOOTBALL_KEYS }}
+          PYTHONPATH: backend:ml:.
+        continue-on-error: true  # meta-feature; if it fails the model still trains with has_api_pred=0
+
       - name: Run pipeline (ingest → process → features → train)
         id: pipeline
         run: |
@@ -128,12 +149,13 @@ jobs:
 
       # Promotion gate runs only when training actually happened. A 'data-only'
       # or 'predict-only' manual run should skip it — nothing new to promote.
-      - name: Promote new club model if better (val_accuracy)
+      - name: Promote new club model if better (multi-metric gate)
         if: ${{ github.event.inputs.mode == null || github.event.inputs.mode == 'full' || github.event.inputs.mode == 'train-only' }}
         run: |
           python scripts/promote_if_better.py \
             --model-type club \
             --metric val_accuracy \
+            --multi-metric \
             --margin ${{ github.event.inputs.promote_margin || '0.0' }}
         env:
           MLFLOW_TRACKING_URI: ${{ secrets.MLFLOW_TRACKING_URI }}

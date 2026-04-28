@@ -11,3 +11,4 @@ from models.player_injury import PlayerInjury
 from models.team_elo import TeamElo
 from models.tournament_simulation import TournamentSimulation
 from models.score_correction import ScoreCorrection
+from models.api_football_prediction import APIFootballPrediction

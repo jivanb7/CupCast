@@ -697,6 +697,86 @@ def add_availability_features(
     return df
 
 
+def add_api_football_predictions(
+    df: pd.DataFrame,
+    parquet_path: str | None = None,
+) -> pd.DataFrame:
+    """Merge API-Football's own match-level prediction probabilities onto the
+    feature frame as a meta-feature.
+
+    API-Football's proprietary model already incorporates lineups, xG, recent
+    form, and other signals we don't currently track. By feeding their three
+    win probabilities into our model as features, we get those signals
+    indirectly without having to ingest each underlying source ourselves.
+
+    Join keys: (home_team, away_team, match_date) — the export script joins
+    api_football_predictions to teams + matches to emit canonical names that
+    match what the historical CSV ingest produces.
+
+    Output columns:
+        api_pred_home, api_pred_draw, api_pred_away  — probabilities in [0, 1]
+        has_api_pred                                — 1 when all three are present
+
+    Falls back to has_api_pred=0 for rows where no API-Football prediction was
+    available (most training data prior to 2025-Q3 will be in this state).
+    Train-time imputation handles the NaN probability values.
+    """
+    from pathlib import Path as _Path
+
+    out_cols = ["api_pred_home", "api_pred_draw", "api_pred_away"]
+    path = _Path(parquet_path) if parquet_path else (
+        PROCESSED_DIR / "api_football_predictions.parquet"
+    )
+
+    if not path.exists():
+        logger.info(
+            "API-Football predictions parquet not found at %s — has_api_pred=0",
+            path,
+        )
+        for c in out_cols:
+            df[c] = np.nan
+        df["has_api_pred"] = 0
+        return df
+
+    pred = pd.read_parquet(path)[
+        ["home_team", "away_team", "match_date", "prob_home", "prob_draw", "prob_away"]
+    ].copy()
+    pred = pred.rename(columns={
+        "prob_home": "api_pred_home",
+        "prob_draw": "api_pred_draw",
+        "prob_away": "api_pred_away",
+    })
+    # Normalize match_date to date-precision on both sides so the merge keys
+    # actually match (parquet dtype is datetime64[ns], df["match_date"] is
+    # also datetime64[ns] but may carry time components from CSV ingest).
+    pred["match_date"] = pd.to_datetime(pred["match_date"]).dt.normalize()
+    df_merge_key = pd.to_datetime(df["match_date"]).dt.normalize()
+    df = df.copy()
+    df["_match_date_norm"] = df_merge_key
+
+    pred = pred.rename(columns={"match_date": "_match_date_norm"})
+
+    df = df.merge(
+        pred,
+        on=["home_team", "away_team", "_match_date_norm"],
+        how="left",
+    )
+    df = df.drop(columns=["_match_date_norm"])
+
+    df["has_api_pred"] = (
+        df["api_pred_home"].notna()
+        & df["api_pred_draw"].notna()
+        & df["api_pred_away"].notna()
+    ).astype(int)
+
+    coverage = df["has_api_pred"].mean()
+    logger.info(
+        "API-Football predictions: merged %d/%d rows (%.1f%% coverage)",
+        df["has_api_pred"].sum(), len(df), coverage * 100,
+    )
+    return df
+
+
 def add_injury_features(
     df: pd.DataFrame,
     injuries_path: str | None = None,
@@ -1126,6 +1206,17 @@ def build_feature_matrix(
 
         # 7b. Key-player availability features (top scorer active/injured)
         features = add_availability_features(features)
+
+        # 7c. API-Football's own match-level predictions as a feature.
+        # Their proprietary model already incorporates lineups, xG, and
+        # form internally, so feeding their probabilities into ours gives
+        # us those signals indirectly. Used as a meta-feature: the model
+        # learns when to defer to API-Football's call vs override it.
+        # Coverage: only matches where the backend successfully fetched a
+        # prediction from /predictions/{fixture_id} — older training rows
+        # (pre-2025) and matches with team-name resolution failures will
+        # have has_api_pred=0 and the model should discount that block.
+        features = add_api_football_predictions(features)
 
         # Impute and select final columns
         if impute:

@@ -616,19 +616,35 @@ def train_stacked_ensemble(base_specs, X_train, y_train, X_val, y_val, sample_we
     for _, test_idx in splits:
         oof_mask[test_idx] = True
 
+    # Slice the per-row sample_weight to whatever the base model expects on
+    # each fold — passes through cleanly when sample_weight is None. The
+    # meta-learner intentionally does NOT receive these weights: it consumes
+    # calibrated probabilities, not raw rows, so home-fav reweighting
+    # doesn't make sense at the meta layer.
+    sw_arr = np.asarray(sample_weight) if sample_weight is not None else None
+
     oof_blocks = []
     base_models = []
     for name, factory in base_specs:
         oof = np.full((n_train, 3), np.nan, dtype=float)
         for tr_idx, te_idx in splits:
             est = factory()
-            est.fit(X_train.iloc[tr_idx], y_train.iloc[tr_idx])
+            sw_fold = sw_arr[tr_idx] if sw_arr is not None else None
+            try:
+                est.fit(X_train.iloc[tr_idx], y_train.iloc[tr_idx],
+                        sample_weight=sw_fold)
+            except TypeError:
+                # Estimator doesn't accept sample_weight (rare for these bases).
+                est.fit(X_train.iloc[tr_idx], y_train.iloc[tr_idx])
             oof[te_idx] = est.predict_proba(X_train.iloc[te_idx])
         oof_blocks.append(oof)
 
         # Refit on full train so we can get val/test predictions later.
         est_full = factory()
-        est_full.fit(X_train, y_train)
+        try:
+            est_full.fit(X_train, y_train, sample_weight=sw_arr)
+        except TypeError:
+            est_full.fit(X_train, y_train)
         base_models.append((name, est_full))
         logger.info(
             "  stack base %s OOF shape=%s (covered rows=%d/%d)",
@@ -695,6 +711,16 @@ def train_mlp_with_optuna(X_train, y_train, X_val, y_val, n_trials=10, sample_we
     scaler = StandardScaler()
     X_train_s = scaler.fit_transform(X_train)
     X_val_s = scaler.transform(X_val)
+
+    if sample_weight is not None:
+        # sklearn MLPClassifier.fit() does not accept sample_weight. Log
+        # this once so we don't silently miss the class-balance reweighting
+        # on the NN — every other learner in the leaderboard does honor it.
+        logger.warning(
+            "MLPClassifier does not support sample_weight; class-balance "
+            "and recency reweighting are SKIPPED for the MLP run. Other "
+            "leaderboard models still receive the weights."
+        )
 
     def objective(trial):
         n_layers = trial.suggest_int("n_layers", 1, 3)
@@ -881,6 +907,83 @@ def run_training(model_type="club", n_trials=10):
                 float(sample_weight_train.min()),
                 float(np.median(sample_weight_train)),
                 float(sample_weight_train.max()))
+
+    # ------------------------------------------------------------------
+    # Class-balanced re-weighting: downweight "easy" home-favorite-and-won
+    # rows so the model stops defaulting to "home favorite usually wins".
+    # The v8 club model picked Home 63% of the time vs the actual 52% rate
+    # — accuracy is below the naive-home baseline. Multiplying the recency
+    # weight by 0.7 on rows where (implied_prob_home > 0.50 AND
+    # result_encoded == 0) shrinks the gradient those rows contribute
+    # without dropping them, pushing the model to be more discerning on
+    # home wins. Rows without odds (`has_odds == 0`) keep weight 1.0 since
+    # we can't tell who was favorite.
+    #
+    # Architecture, hyperparameters, and feature set are unchanged — this
+    # is purely a training-time per-row weight multiplier.
+    # ------------------------------------------------------------------
+    HOME_FAV_WIN_WEIGHT = 0.7
+    train_mask_for_weight = df["match_date"] < train_end
+    if (
+        "implied_prob_home" in df.columns
+        and "result_encoded" in df.columns
+    ):
+        train_slice = df.loc[train_mask_for_weight].reset_index(drop=True)
+        implied_prob_home = pd.to_numeric(
+            train_slice.get("implied_prob_home"), errors="coerce"
+        ).fillna(0.0).to_numpy()
+        result_encoded = pd.to_numeric(
+            train_slice.get("result_encoded"), errors="coerce"
+        ).fillna(-1).astype(int).to_numpy()
+        if "has_odds" in train_slice.columns:
+            has_odds = pd.to_numeric(
+                train_slice["has_odds"], errors="coerce"
+            ).fillna(0).astype(int).to_numpy()
+        else:
+            # No has_odds column (e.g. intl) — assume odds are present so
+            # the home-fav heuristic still applies wherever implied_prob is
+            # populated; rows with NaN implied_prob were filled to 0.0
+            # above, so they fall through the 0.50 threshold and stay at
+            # weight 1.0 anyway.
+            has_odds = np.ones_like(result_encoded, dtype=int)
+
+        is_home_fav = implied_prob_home > 0.50
+        home_won = result_encoded == 0  # RESULT_TO_INT["H"] == 0
+        downweight_mask = is_home_fav & home_won & (has_odds == 1)
+
+        home_fav_rate = float(downweight_mask.mean())
+        balance_weights = np.ones(len(train_slice), dtype=float)
+        balance_weights[downweight_mask] = HOME_FAV_WIN_WEIGHT
+
+        # Combine recency * balance — both are multiplicative per-row
+        # weights, so this stacks cleanly. recency_weights returns a numpy
+        # array, so direct elementwise multiply is fine.
+        sample_weight_train = np.asarray(sample_weight_train, dtype=float) * balance_weights
+
+        logger.info(
+            "Class-balance re-weighting: home_fav_rate=%.3f, downweighted=%d/%d (%.1f%%) at factor %.2f",
+            home_fav_rate, int(downweight_mask.sum()), len(train_slice),
+            100.0 * downweight_mask.mean(), HOME_FAV_WIN_WEIGHT,
+        )
+        logger.info(
+            "Combined sample weights: min=%.3f mean=%.3f median=%.3f max=%.3f",
+            float(sample_weight_train.min()),
+            float(sample_weight_train.mean()),
+            float(np.median(sample_weight_train)),
+            float(sample_weight_train.max()),
+        )
+        # Stash these for later mlflow.log_param/log_metric inside each run.
+        _class_balance_stats = {
+            "home_fav_win_rate": home_fav_rate,
+            "downweighted_frac": float(downweight_mask.mean()),
+            "home_fav_win_weight": HOME_FAV_WIN_WEIGHT,
+        }
+    else:
+        logger.warning(
+            "implied_prob_home / result_encoded missing — skipping class-balance "
+            "re-weighting; using recency weights only."
+        )
+        _class_balance_stats = None
 
     mlflow.set_experiment(experiment_name)
     results = {}
@@ -1100,6 +1203,25 @@ def run_training(model_type="club", n_trials=10):
             mlflow.log_metric("val_brier_score", float(best.get("brier_score", 0.0)))
         except Exception:
             logger.exception("Failed to log val_* metrics on best run (gate may struggle to compare)")
+
+        # Surface the class-balance reweighting stats on the best run so
+        # the promotion-gate audit trail records what changed between runs.
+        if _class_balance_stats is not None:
+            try:
+                mlflow.log_metric(
+                    "class_balance_home_fav_win_rate",
+                    _class_balance_stats["home_fav_win_rate"],
+                )
+                mlflow.log_metric(
+                    "class_balance_downweighted_frac",
+                    _class_balance_stats["downweighted_frac"],
+                )
+                mlflow.log_param(
+                    "class_balance_home_fav_win_weight",
+                    _class_balance_stats["home_fav_win_weight"],
+                )
+            except Exception:
+                logger.warning("Failed to log class-balance stats on best run", exc_info=True)
 
         try:
             if isinstance(best["model"], xgb.XGBClassifier):

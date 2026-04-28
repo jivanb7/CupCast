@@ -42,6 +42,7 @@ from schemas.match import (
     TeamFormStats,
     UpcomingMatchesResponse,
 )
+from services.league_track_record import gate_value_picks, get_league_accuracy_map
 
 router = APIRouter(prefix="/matches", tags=["matches"])
 
@@ -78,16 +79,38 @@ def _build_prediction_map(db: Session, match_ids: list[int]) -> dict[int, Predic
     return result
 
 
-def _prediction_to_summary(pred: Optional[Prediction]) -> Optional[PredictionSummary]:
+def _prediction_to_summary(
+    pred: Optional[Prediction],
+    league_code: Optional[str] = None,
+    accuracy_map: Optional[dict] = None,
+) -> Optional[PredictionSummary]:
+    """Convert a Prediction ORM row to a PredictionSummary response schema.
+
+    When league_code and accuracy_map are provided, value-pick gating is
+    applied: if the model's 30-day rolling accuracy in this league is below
+    the threshold, is_value_pick is set to False in the response (the DB row
+    is unchanged) and value_pick_gated_reason explains why.
+
+    Pass league_code=None / accuracy_map=None for historical H2H summaries
+    where gating is not needed.
+    """
     if pred is None:
         return None
+
+    raw_is_value_pick = pred.is_value_pick or False
+    effective_is_value_pick, gated_reason = gate_value_picks(
+        is_value_pick=raw_is_value_pick,
+        league_code=league_code,
+        accuracy_map=accuracy_map or {},
+    )
+
     return PredictionSummary(
         prob_home_win=pred.prob_home_win,
         prob_draw=pred.prob_draw,
         prob_away_win=pred.prob_away_win,
         predicted_result=pred.predicted_result,
         confidence=pred.confidence or 0.0,
-        is_value_pick=pred.is_value_pick or False,
+        is_value_pick=effective_is_value_pick,
         value_pick_direction=pred.value_pick_direction,
         explanation_text=pred.explanation_text,
         was_correct=pred.was_correct,
@@ -97,6 +120,7 @@ def _prediction_to_summary(pred: Optional[Prediction]) -> Optional[PredictionSum
         edge_home=pred.edge_home,
         edge_draw=pred.edge_draw,
         edge_away=pred.edge_away,
+        value_pick_gated_reason=gated_reason,
     )
 
 
@@ -212,6 +236,7 @@ def _match_to_summary(
     teams: dict[int, Team],
     leagues: dict[int, League],
     predictions: dict[int, Prediction],
+    accuracy_map: Optional[dict] = None,
 ) -> MatchSummary:
     home = teams.get(m.home_team_id)
     away = teams.get(m.away_team_id)
@@ -262,7 +287,11 @@ def _match_to_summary(
         tournament=m.tournament,
         stage=m.stage,
         group_label=m.group_label,
-        prediction=_prediction_to_summary(predictions.get(m.id)),
+        prediction=_prediction_to_summary(
+            predictions.get(m.id),
+            league_code=league.code if league else None,
+            accuracy_map=accuracy_map,
+        ),
     )
 
 
@@ -369,7 +398,8 @@ def get_upcoming_matches(
     leagues_map = _build_league_map(db, league_ids)
     predictions = _build_prediction_map(db, match_ids)
 
-    summaries = [_match_to_summary(m, teams, leagues_map, predictions) for m in matches]
+    accuracy_map = get_league_accuracy_map(db)
+    summaries = [_match_to_summary(m, teams, leagues_map, predictions, accuracy_map) for m in matches]
 
     return UpcomingMatchesResponse(
         matches=summaries,
@@ -414,7 +444,8 @@ def get_results(
     leagues_map = _build_league_map(db, league_ids)
     predictions = _build_prediction_map(db, match_ids)
 
-    summaries = [_match_to_summary(m, teams, leagues_map, predictions) for m in matches]
+    accuracy_map = get_league_accuracy_map(db)
+    summaries = [_match_to_summary(m, teams, leagues_map, predictions, accuracy_map) for m in matches]
 
     # Compute accuracy from was_correct column
     evaluated = [p for p in predictions.values() if p.was_correct is not None]
@@ -492,6 +523,8 @@ def get_match(
     league_code = league.code if league else "unknown"
     league_name = league.name if league else "Unknown League"
 
+    accuracy_map = get_league_accuracy_map(db)
+
     return MatchDetail(
         id=m.id,
         match_date=m.match_date,
@@ -513,7 +546,11 @@ def get_match(
         result=m.result,
         status=m.status,
         tournament=m.tournament,
-        prediction=_prediction_to_summary(pred),
+        prediction=_prediction_to_summary(
+            pred,
+            league_code=league.code if league else None,
+            accuracy_map=accuracy_map,
+        ),
         home_shots=m.home_shots,
         away_shots=m.away_shots,
         home_shots_on_target=m.home_shots_on_target,
