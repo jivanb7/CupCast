@@ -28,6 +28,7 @@ Usage:
 
 import logging
 import time
+import unicodedata
 from datetime import datetime, timezone, timedelta
 from threading import Thread, Event
 from typing import Optional
@@ -35,6 +36,23 @@ from typing import Optional
 import requests
 
 from services.api_key_rotator import get_api_football_key, mark_key_exhausted
+
+
+def _strip_accents(s: str) -> str:
+    """Remove Latin diacritics so API names match canonical DB rows.
+
+    "Atletico Madrid" (API-Football) → matches "Atlético de Madrid" (DB)
+    "Munchen" (some feeds) → matches "München"
+    Without this normalisation the live-sync silently drops every accented
+    team name, which on 2026-04-29 left the UCL semifinal stuck out of
+    the cache pipeline mid-match.
+    """
+    if not s:
+        return s
+    return "".join(
+        ch for ch in unicodedata.normalize("NFKD", s)
+        if not unicodedata.combining(ch)
+    )
 
 logger = logging.getLogger(__name__)
 
@@ -630,24 +648,34 @@ class LiveScoreService:
                         expanded = expanded.replace(full, abbr)
                     if expanded != name and expanded in team_by_name:
                         return team_by_name[expanded]
-                    # Try substring containment (e.g., "Salford" in "Salford City")
+                    # Substring containment — accent-stripped on both sides
+                    # so "Atletico Madrid" finds "Atlético de Madrid" as
+                    # readily as "Salford" finds "Salford City".
                     name_lower = name.lower()
+                    name_lower_ascii = _strip_accents(name_lower)
                     for db_name, tid in team_by_name.items():
                         if isinstance(db_name, str) and len(db_name) > 3:
-                            if db_name.lower() in name_lower or name_lower in db_name.lower():
+                            db_lower_ascii = _strip_accents(db_name.lower())
+                            if (
+                                db_lower_ascii in name_lower_ascii
+                                or name_lower_ascii in db_lower_ascii
+                            ):
                                 return tid
 
                     # Word-overlap matching — handles ESPN "Celta Vigo" vs DB
                     # "Celta de Vigo" where neither side is a substring of the
                     # other but the meaningful words overlap. Required token
                     # length 3+ skips connector words (de, of, the, fc, ac).
+                    # Accent-stripped on both sides so "Atletico" matches
+                    # "Atlético" word-for-word.
                     import re as _re
-                    name_words = set(_re.findall(r"\w{3,}", name_lower))
+                    name_words = set(_re.findall(r"\w{3,}", name_lower_ascii))
                     if name_words:
                         for db_name, tid in team_by_name.items():
                             if not isinstance(db_name, str) or len(db_name) < 4:
                                 continue
-                            db_words = set(_re.findall(r"\w{3,}", db_name.lower()))
+                            db_ascii = _strip_accents(db_name.lower())
+                            db_words = set(_re.findall(r"\w{3,}", db_ascii))
                             if not db_words:
                                 continue
                             # Strict subset check in either direction.
@@ -936,13 +964,39 @@ class LiveScoreService:
                 def _names_overlap(a: str, b: str) -> bool:
                     if not a or not b:
                         return False
-                    if a in b or b in a:
+                    # Compare accent-stripped forms so "Atlético de Madrid"
+                    # overlaps "Atletico Madrid" in either direction. Without
+                    # this the stale-live scan can't see UCL matches for
+                    # accented clubs and falls back to "not in cache" → the
+                    # premature-finalization path we already guarded with the
+                    # cup-aware time threshold above.
+                    a_ascii = _strip_accents(a)
+                    b_ascii = _strip_accents(b)
+                    if a_ascii in b_ascii or b_ascii in a_ascii:
                         return True
-                    aw = set(_re_words.findall(r"\w{3,}", a))
-                    bw = set(_re_words.findall(r"\w{3,}", b))
+                    aw = set(_re_words.findall(r"\w{3,}", a_ascii))
+                    bw = set(_re_words.findall(r"\w{3,}", b_ascii))
                     if not aw or not bw:
                         return False
                     return aw.issubset(bw) or bw.issubset(aw)
+
+                # Cup leagues can run to 120 min + penalties; their stale-live
+                # threshold needs to clear that ceiling so a knockout going to
+                # ET doesn't get falsely finalised mid-extra-time. Mirrors the
+                # FULLTIME_MIN_AFTER_KICKOFF_CUP_S constant in score_updater.
+                _STALE_LIVE_NORMAL_S = 105 * 60   # regulation + stoppage
+                _STALE_LIVE_CUP_S = 150 * 60      # ET + penalty-shootout buffer
+                _CUP_LEAGUE_CODES = {"ucl", "worldcup"}
+
+                # Build league_id → code map once so the per-stale loop
+                # doesn't re-query for every row.
+                from models.league import League as _League
+                _league_codes = {
+                    lg.id: lg.code
+                    for lg in db.query(_League).all()
+                }
+
+                now_utc = datetime.now(timezone.utc)
 
                 for stale in stale_live:
                     # Check if this match is still actively live in cache by team name (not score)
@@ -975,6 +1029,40 @@ class LiveScoreService:
                                 stale.home_team_id,
                                 stale.away_team_id,
                                 stale.match_date,
+                            )
+                            continue
+
+                        # Time guard: refuse to finalize until enough wall-clock
+                        # has passed since kickoff to plausibly cover full-time
+                        # (or ET + pens for cup-style matches). Without this,
+                        # a single missed cache tick during early/mid-game
+                        # would lock in the current score (typically 0-0)
+                        # as the final result — exactly the bug that hit the
+                        # 2026-04-29 Atlético-Arsenal UCL semifinal at the
+                        # 30th minute when ESPN's UCL feed coverage gap left
+                        # the match out of the live cache snapshot.
+                        league_code = _league_codes.get(stale.league_id)
+                        is_cup = league_code in _CUP_LEAGUE_CODES
+                        threshold_s = _STALE_LIVE_CUP_S if is_cup else _STALE_LIVE_NORMAL_S
+                        try:
+                            dh, dm = stale.kickoff_time.split(":")
+                            kickoff_dt = datetime.combine(
+                                stale.match_date,
+                                datetime.min.time(),
+                                tzinfo=timezone.utc,
+                            ).replace(hour=int(dh), minute=int(dm))
+                            elapsed_s = (now_utc - kickoff_dt).total_seconds()
+                        except (ValueError, AttributeError):
+                            # Unparseable kickoff_time — treat as too-fresh-to-finalise.
+                            elapsed_s = 0
+
+                        if elapsed_s < threshold_s:
+                            logger.info(
+                                "live_score_service: skipping stale-live finalize for "
+                                "match %d (%s vs %s, league=%s) — only %.0f min "
+                                "since kickoff, threshold %.0f min",
+                                stale.id, stale_h_name, stale_a_name, league_code,
+                                elapsed_s / 60, threshold_s / 60,
                             )
                             continue
 

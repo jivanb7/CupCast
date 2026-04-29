@@ -97,6 +97,10 @@ class MatchDetail(MatchSummary):
     away_shots_on_target: Optional[int] = None
     home_corners: Optional[int] = None
     away_corners: Optional[int] = None
+    home_yellow_cards: Optional[int] = None
+    away_yellow_cards: Optional[int] = None
+    home_red_cards: Optional[int] = None
+    away_red_cards: Optional[int] = None
     home_form: Optional[TeamFormStats] = None
     away_form: Optional[TeamFormStats] = None
     h2h_last_5: list["MatchSummary"] = []

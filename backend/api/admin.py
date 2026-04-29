@@ -547,6 +547,32 @@ def refresh_league_players(
         )
 
 
+@router.post("/match-stats/sync")
+def sync_match_stats(
+    _key: str = Depends(verify_admin_key),
+    db: Session = Depends(get_db),
+):
+    """Pull in-play stats from API-Football for currently-live matches plus
+    matches that finalised in the last few hours.
+
+    Called from the ``cupcast-match-stats-sync`` Cloud Scheduler cron every
+    5 minutes — that cadence matches API-Football's upstream stats refresh
+    and stays comfortably under the 7,500/day quota (~120 calls/hr at peak
+    when 5 matches are simultaneously live).
+
+    Pulls Total Shots, Shots on Goal, Corner Kicks, Fouls, Yellow + Red
+    Cards. Writes them onto the matches table so the MatchDetail "Key
+    Stats" panel renders without waiting for next-day CSV ingestion.
+    """
+    from services.match_stats_service import sync_stats_for_live_and_recent
+
+    try:
+        result = sync_stats_for_live_and_recent(db)
+        return {"status": "done", **result}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Match-stats sync failed: {str(e)}")
+
+
 @router.post("/fixtures/cleanup-ucl-phantoms")
 def cleanup_ucl_phantoms(
     _key: str = Depends(verify_admin_key),

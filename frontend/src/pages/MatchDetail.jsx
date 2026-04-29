@@ -475,10 +475,14 @@ function MDWhy({ m }) {
 // ── Stats ──────────────────────────────────────────────────────────────
 
 function MDStats({ m }) {
+  // Trimmed to the three signal stats most viewers actually care about.
+  // Goals doubles as a sanity-check next to the hero score; cards are the
+  // only other in-play numbers worth surfacing without xG / possession
+  // data we don't model.
   const stats = [
-    { k: 'Shots', h: m.home_shots, a: m.away_shots, fmt: 'n0' },
-    { k: 'Shots on target', h: m.home_shots_on_target, a: m.away_shots_on_target, fmt: 'n0' },
-    { k: 'Corners', h: m.home_corners, a: m.away_corners, fmt: 'n0' },
+    { k: 'Goals', h: m.home_goals, a: m.away_goals, fmt: 'n0' },
+    { k: 'Yellow cards', h: m.home_yellow_cards, a: m.away_yellow_cards, fmt: 'n0' },
+    { k: 'Red cards', h: m.home_red_cards, a: m.away_red_cards, fmt: 'n0' },
   ]
   const hasAny = stats.some((s) => s.h != null || s.a != null)
   if (!hasAny) {
