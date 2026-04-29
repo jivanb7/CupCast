@@ -520,37 +520,20 @@ def get_match(
         for hm in h2h_matches
     ]
 
-    league_code = league.code if league else "unknown"
-    league_name = league.name if league else "Unknown League"
-
     accuracy_map = get_league_accuracy_map(db)
 
+    # Route through _match_to_summary so kickoff_time, match_minute, stage,
+    # and group_label stay in sync with /matches/upcoming. Hand-rolling the
+    # response here previously dropped those four fields, which made the
+    # match-detail page fall back to UTC-midnight (rendering the wrong day +
+    # time in PDT) and never show a live-minute ticker.
+    teams_map = {m.home_team_id: home_team, m.away_team_id: away_team}
+    leagues_map = {m.league_id: league} if m.league_id and league else {}
+    preds_map = {m.id: pred} if pred else {}
+    summary = _match_to_summary(m, teams_map, leagues_map, preds_map, accuracy_map)
+
     return MatchDetail(
-        id=m.id,
-        match_date=m.match_date,
-        home_team_id=m.home_team_id,
-        home_team_name=home_name,
-        home_team_short_name=home_team.short_name if home_team else None,
-        home_team_crest=home_team.logo_url if home_team else None,
-        home_team_country_code=home_team.country_code if home_team and home_team.country_code else None,
-        away_team_id=m.away_team_id,
-        away_team_name=away_name,
-        away_team_short_name=away_team.short_name if away_team else None,
-        away_team_crest=away_team.logo_url if away_team else None,
-        away_team_country_code=away_team.country_code if away_team and away_team.country_code else None,
-        league_code=league_code,
-        league_name=league_name,
-        season=m.season,
-        home_goals=m.home_goals,
-        away_goals=m.away_goals,
-        result=m.result,
-        status=m.status,
-        tournament=m.tournament,
-        prediction=_prediction_to_summary(
-            pred,
-            league_code=league.code if league else None,
-            accuracy_map=accuracy_map,
-        ),
+        **summary.model_dump(),
         home_shots=m.home_shots,
         away_shots=m.away_shots,
         home_shots_on_target=m.home_shots_on_target,
