@@ -560,15 +560,29 @@ def sync_match_stats(
     and stays comfortably under the 7,500/day quota (~120 calls/hr at peak
     when 5 matches are simultaneously live).
 
-    Pulls Total Shots, Shots on Goal, Corner Kicks, Fouls, Yellow + Red
-    Cards. Writes them onto the matches table so the MatchDetail "Key
-    Stats" panel renders without waiting for next-day CSV ingestion.
+    Pulls two layers in sequence on the same candidate set:
+      - Team-level: Total Shots, Shots on Goal, Corner Kicks, Fouls,
+        Yellow + Red Cards. Written onto the matches row so the
+        MatchDetail "Key Stats" panel renders without waiting for
+        next-day CSV ingestion.
+      - Player-level: per-player goals, assists, shots, cards, minutes,
+        rating. Upserted into match_player_stats so the MatchDetail
+        scorers/cards section can attribute events to the players who
+        actually made them happen.
     """
     from services.match_stats_service import sync_stats_for_live_and_recent
+    from services.match_player_stats_service import (
+        sync_player_stats_for_live_and_recent,
+    )
 
     try:
-        result = sync_stats_for_live_and_recent(db)
-        return {"status": "done", **result}
+        team_result = sync_stats_for_live_and_recent(db)
+        player_result = sync_player_stats_for_live_and_recent(db)
+        return {
+            "status": "done",
+            "team_stats": team_result,
+            "player_stats": player_result,
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Match-stats sync failed: {str(e)}")
 

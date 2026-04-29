@@ -59,6 +59,35 @@ class TeamFormStats(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class PlayerMatchStats(BaseModel):
+    """Per-player statistics for a single match.
+
+    Surfaced on the match detail page so the frontend can render goal
+    scorers, carded players, and top performers next to the score line.
+    Sourced from API-Football's /fixtures/players endpoint via the
+    match_stats sync cron — totals refresh every 5 minutes during in-play
+    and lock in at FT.
+    """
+    player_api_football_id: int
+    player_name: str
+    player_photo_url: Optional[str] = None
+    team_id: int
+    team_name: Optional[str] = None
+    position: Optional[str] = None
+    jersey_number: Optional[int] = None
+    minutes_played: Optional[int] = None
+    rating: Optional[float] = None
+    goals: int = 0
+    assists: int = 0
+    shots_total: int = 0
+    shots_on: int = 0
+    yellow_cards: int = 0
+    red_cards: int = 0
+    is_starter: bool = False
+
+    model_config = {"from_attributes": True}
+
+
 class MatchSummary(BaseModel):
     id: int
     match_date: date
@@ -104,6 +133,10 @@ class MatchDetail(MatchSummary):
     home_form: Optional[TeamFormStats] = None
     away_form: Optional[TeamFormStats] = None
     h2h_last_5: list["MatchSummary"] = []
+    # Per-player stats for the match — populated by the match-stats cron.
+    # The frontend filters this list to surface goal scorers + carded
+    # players as a separate "Goal scorers & cards" panel.
+    player_stats: list[PlayerMatchStats] = []
 
     model_config = {"from_attributes": True}
 

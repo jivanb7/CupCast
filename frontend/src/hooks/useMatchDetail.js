@@ -54,6 +54,13 @@ export default function useMatchDetail(matchId) {
           adapted.away_yellow_cards = res.away_yellow_cards
           adapted.home_red_cards = res.home_red_cards
           adapted.away_red_cards = res.away_red_cards
+          // home_team_id + away_team_id forwarded so the player-events
+          // section can filter scorers/cards into the right side without
+          // string-matching team names. player_stats is the array
+          // populated by services.match_player_stats_service.
+          adapted.home_team_id = res.home_team_id
+          adapted.away_team_id = res.away_team_id
+          adapted.player_stats = res.player_stats || []
           adapted.explanationText = res.prediction?.explanation_text || null
         }
         statusRef.current = adapted?.status || null

@@ -49,6 +49,8 @@ export default function MatchDetail() {
             <MDWhy m={m}/>
             <MDDivider label="⑤ Key stats"/>
             <MDStats m={m}/>
+            <MDDivider label="⑥ Goal scorers & cards"/>
+            <MDPlayerEvents m={m}/>
           </>
         )}
         <MDFooter/>
@@ -536,11 +538,150 @@ function MDStats({ m }) {
   );
 }
 
+// ── Player events ─────────────────────────────────────────────────────
+//
+// Buckets the per-match per-player stats into "Goal scorers" and
+// "Carded players" lists for each side. Sourced from API-Football's
+// /fixtures/players endpoint via match_player_stats_service — refreshed
+// every 5 min while the match is live and locked in at FT.
+
+function MDPlayerEvents({ m }) {
+  const players = Array.isArray(m.player_stats) ? m.player_stats : []
+  const home_id = Number(m.id ? m.home_team_id ?? m.homeTeamId : null) || null
+
+  // Backend doesn't expose home_team_id on the adapted match by name we use
+  // here — fall back to filtering by team_name match against the visible
+  // hero strings. Robust against either side of the team_id plumbing.
+  const homeName = (m.home || '').toLowerCase()
+  const awayName = (m.away || '').toLowerCase()
+  const isHome = (p) => {
+    if (p.team_id != null && home_id != null) return p.team_id === home_id
+    if (p.team_name) return p.team_name.toLowerCase() === homeName
+    return false
+  }
+  const isAway = (p) => {
+    if (p.team_id != null && home_id != null) return p.team_id !== home_id
+    if (p.team_name) return p.team_name.toLowerCase() === awayName
+    return !isHome(p)
+  }
+
+  const scorers = players.filter((p) => (p.goals || 0) > 0)
+  const carded = players.filter((p) => (p.yellow_cards || 0) > 0 || (p.red_cards || 0) > 0)
+
+  if (scorers.length === 0 && carded.length === 0) {
+    return (
+      <section style={{maxWidth: 1080, margin:'0 auto', padding:'0 40px'}}>
+        <div style={{padding:'24px 0', fontFamily:'var(--cc-serif)', fontStyle:'italic', fontSize: 16, lineHeight: 1.5, color:'var(--cc-muted)', textAlign:'center', borderTop:'1px solid var(--cc-line)', borderBottom:'1px solid var(--cc-line)'}}>
+          Player events publish during and after the match.
+        </div>
+      </section>
+    )
+  }
+
+  const homeScorers = scorers.filter(isHome)
+  const awayScorers = scorers.filter(isAway)
+  const homeCarded = carded.filter(isHome)
+  const awayCarded = carded.filter(isAway)
+
+  return (
+    <section style={{maxWidth: 1080, margin:'0 auto', padding:'0 40px'}}>
+      <div style={{display:'grid', gridTemplateColumns:'1fr 1fr', gap: 0, border:'1px solid var(--cc-line)', borderRadius: 6}}>
+        <PlayerEventColumn
+          team={m.home}
+          scorers={homeScorers}
+          carded={homeCarded}
+          align="left"
+          rightBorder
+        />
+        <PlayerEventColumn
+          team={m.away}
+          scorers={awayScorers}
+          carded={awayCarded}
+          align="right"
+          rightBorder={false}
+        />
+      </div>
+    </section>
+  )
+}
+
+function PlayerEventColumn({ team, scorers, carded, align, rightBorder }) {
+  return (
+    <div style={{
+      padding:'22px 24px',
+      borderRight: rightBorder ? '1px solid var(--cc-line)' : 'none',
+      textAlign: align,
+    }}>
+      <div className="cc-eyebrow" style={{textAlign: align}}>{team || 'Team'}</div>
+
+      {scorers.length > 0 && (
+        <div style={{marginTop: 14}}>
+          <div className="mono" style={{fontSize: 10, letterSpacing:'0.14em', color:'var(--cc-gold)', textTransform:'uppercase', marginBottom: 6}}>
+            ◆ Goals
+          </div>
+          {scorers.map((p) => (
+            <PlayerEventRow
+              key={`g-${p.player_api_football_id}`}
+              name={p.player_name}
+              detail={p.assists > 0 ? `${p.goals}G · ${p.assists}A` : `${p.goals}G`}
+              align={align}
+            />
+          ))}
+        </div>
+      )}
+
+      {carded.length > 0 && (
+        <div style={{marginTop: scorers.length ? 18 : 14}}>
+          <div className="mono" style={{fontSize: 10, letterSpacing:'0.14em', color:'var(--cc-muted)', textTransform:'uppercase', marginBottom: 6}}>
+            Cards
+          </div>
+          {carded.map((p) => {
+            const tags = []
+            if (p.red_cards > 0) tags.push('🟥')
+            if (p.yellow_cards > 0) tags.push('🟨'.repeat(Math.min(p.yellow_cards, 2)))
+            return (
+              <PlayerEventRow
+                key={`c-${p.player_api_football_id}`}
+                name={p.player_name}
+                detail={tags.join(' ')}
+                align={align}
+              />
+            )
+          })}
+        </div>
+      )}
+
+      {scorers.length === 0 && carded.length === 0 && (
+        <div style={{marginTop: 14, fontFamily:'var(--cc-serif)', fontStyle:'italic', fontSize: 14, color:'var(--cc-muted)'}}>
+          —
+        </div>
+      )}
+    </div>
+  )
+}
+
+function PlayerEventRow({ name, detail, align }) {
+  return (
+    <div style={{
+      display:'flex',
+      flexDirection: align === 'right' ? 'row-reverse' : 'row',
+      alignItems:'baseline',
+      justifyContent:'space-between',
+      gap: 14,
+      padding:'4px 0',
+    }}>
+      <span style={{fontFamily:'var(--cc-serif)', fontSize: 16, color:'var(--cc-text)'}}>{name}</span>
+      <span className="mono" style={{fontSize: 11, color:'var(--cc-muted)', letterSpacing:'0.06em'}}>{detail}</span>
+    </div>
+  )
+}
+
+
 function MDFooter() {
   return (
     <footer style={{maxWidth: 1080, margin:'48px auto 0', padding:'40px 40px 0', borderTop:'1px solid var(--cc-line)', display:'flex', justifyContent:'space-between', fontFamily:'var(--cc-mono)', fontSize: 10, letterSpacing:'0.1em', color:'var(--cc-muted)', textTransform:'uppercase'}}>
       <span>← <Link to="/" style={{color:'inherit'}}>Back to Dashboard</Link></span>
-      <span>Match · v26.4</span>
+      <span>Match · v26.5</span>
     </footer>
   );
 }

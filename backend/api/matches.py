@@ -522,6 +522,62 @@ def get_match(
 
     accuracy_map = get_league_accuracy_map(db)
 
+    # Per-player stats — populated by services.match_player_stats_service
+    # on the same 5-min cron tick that pulls team stats. Surface only
+    # rows with at least one notable event (goal, assist, yellow, red) or
+    # a starter; the frontend buckets them into "Goal scorers" + "Cards"
+    # panels and skips the rest. Sorting by goals DESC then yellows DESC
+    # keeps the most newsworthy entries first.
+    from models.match_player_stats import MatchPlayerStats
+
+    player_rows = (
+        db.query(MatchPlayerStats)
+        .filter(MatchPlayerStats.match_id == m.id)
+        .filter(
+            (MatchPlayerStats.goals > 0)
+            | (MatchPlayerStats.assists > 0)
+            | (MatchPlayerStats.yellow_cards > 0)
+            | (MatchPlayerStats.red_cards > 0)
+        )
+        .order_by(
+            MatchPlayerStats.red_cards.desc(),
+            MatchPlayerStats.goals.desc(),
+            MatchPlayerStats.assists.desc(),
+            MatchPlayerStats.yellow_cards.desc(),
+        )
+        .all()
+    )
+
+    # Resolve team names for the response in one pass.
+    team_name_for = {
+        m.home_team_id: home_team.canonical_name if home_team else None,
+        m.away_team_id: away_team.canonical_name if away_team else None,
+    }
+
+    from schemas.match import PlayerMatchStats as _PlayerMatchStats
+
+    player_stats = [
+        _PlayerMatchStats(
+            player_api_football_id=row.player_api_football_id,
+            player_name=row.player_name,
+            player_photo_url=row.player_photo_url,
+            team_id=row.team_id,
+            team_name=team_name_for.get(row.team_id),
+            position=row.position,
+            jersey_number=row.jersey_number,
+            minutes_played=row.minutes_played,
+            rating=float(row.rating) if row.rating is not None else None,
+            goals=row.goals or 0,
+            assists=row.assists or 0,
+            shots_total=row.shots_total or 0,
+            shots_on=row.shots_on or 0,
+            yellow_cards=row.yellow_cards or 0,
+            red_cards=row.red_cards or 0,
+            is_starter=bool(row.is_starter),
+        )
+        for row in player_rows
+    ]
+
     # Route through _match_to_summary so kickoff_time, match_minute, stage,
     # and group_label stay in sync with /matches/upcoming. Hand-rolling the
     # response here previously dropped those four fields, which made the
@@ -547,4 +603,5 @@ def get_match(
         home_form=home_form,
         away_form=away_form,
         h2h_last_5=h2h_summaries,
+        player_stats=player_stats,
     )

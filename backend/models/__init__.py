@@ -12,3 +12,4 @@ from models.team_elo import TeamElo
 from models.tournament_simulation import TournamentSimulation
 from models.score_correction import ScoreCorrection
 from models.api_football_prediction import APIFootballPrediction
+from models.match_player_stats import MatchPlayerStats
