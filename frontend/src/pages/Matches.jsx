@@ -80,7 +80,7 @@ export default function Matches() {
   return (
     <div className={`cc-root cc-${theme}`} style={{ position: 'relative', minHeight: '100vh', overflowX: 'hidden' }}>
       <Aurora />
-      <header style={{ position: 'relative', zIndex: 5, display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '18px 32px', borderBottom: '1px solid var(--cc-line-strong)', background: 'rgba(2,6,23,0.5)', backdropFilter: 'blur(14px)' }}>
+      <header style={{ position: 'relative', zIndex: 5, display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '18px 32px', borderBottom: '1px solid var(--cc-line-strong)', background: theme === 'night' ? 'rgba(2,6,23,0.5)' : 'rgba(241,237,229,0.75)', backdropFilter: 'blur(14px)' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 18 }}>
           <Link to="/" style={{ fontFamily: 'var(--cc-serif)', fontStyle: 'italic', fontWeight: 700, fontSize: 22, color: 'var(--cc-gold)', letterSpacing: '-0.02em', textDecoration: 'none' }}>CupCast</Link>
           <span style={{ color: 'var(--cc-dim)', fontFamily: 'var(--cc-mono)', fontSize: 10, letterSpacing: '0.1em' }}>{'// MATCHES'}</span>

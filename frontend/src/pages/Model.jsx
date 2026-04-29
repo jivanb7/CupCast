@@ -32,7 +32,7 @@ export default function Model() {
     <div className={`cc-root cc-${theme} cc-terminal`} style={{position:'relative', minHeight:'100vh', overflowX:'hidden'}}>
       <Aurora/>
       {/* Header */}
-      <header style={{position:'relative', zIndex: 5, display:'grid', gridTemplateColumns:'auto 1fr auto auto', gap: 24, alignItems:'center', padding:'12px 24px', borderBottom:'1px solid var(--cc-line-strong)', background:'rgba(2,6,23,0.6)', backdropFilter:'blur(12px)'}}>
+      <header style={{position:'relative', zIndex: 5, display:'grid', gridTemplateColumns:'auto 1fr auto auto', gap: 24, alignItems:'center', padding:'12px 24px', borderBottom:'1px solid var(--cc-line-strong)', background: theme === 'night' ? 'rgba(2,6,23,0.6)' : 'rgba(241,237,229,0.75)', backdropFilter:'blur(12px)'}}>
         <Link to="/" style={{fontFamily:'var(--cc-serif)', fontStyle:'italic', fontWeight:700, fontSize: 20, color:'var(--cc-gold)', letterSpacing:'-0.02em', textDecoration:'none'}}>CupCast<span style={{color:'var(--cc-muted)', fontStyle:'normal', fontWeight:400, fontSize: 11, marginLeft: 8, fontFamily:'var(--cc-mono)', letterSpacing:'0.1em'}}>{'// MODEL.PERFORMANCE'}</span></Link>
         <div className="mono" style={{fontSize: 10, color:'var(--cc-muted)', letterSpacing:'0.12em'}}>{headerLine(data, loading, fatal)}</div>
         <CCNav active="Model" theme={theme} onTheme={setTheme}/>
