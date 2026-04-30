@@ -39,11 +39,15 @@ class MatchPlayerStats(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
 
+    # Note: index on match_id is declared explicitly in __table_args__
+    # below so the SQLAlchemy-generated name matches the Alembic migration
+    # exactly. Setting index=True here as well duplicates the index under
+    # the same auto-generated name and breaks Base.metadata.create_all()
+    # (used by the in-memory sqlite test fixtures).
     match_id = Column(
         Integer,
         ForeignKey("matches.id", ondelete="CASCADE"),
         nullable=False,
-        index=True,
     )
     team_id = Column(Integer, ForeignKey("teams.id"), nullable=False)
 
