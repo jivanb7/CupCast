@@ -7,6 +7,7 @@ const items = [
   { k: 'World Cup', to: '/world-cup' },
   { k: 'Model', to: '/model' },
   { k: 'Value', to: '/value' },
+  { k: 'Pricing', to: '/pricing' },
   { k: 'About', to: '/about' },
 ]
 

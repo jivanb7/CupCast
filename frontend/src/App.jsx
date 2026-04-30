@@ -8,6 +8,7 @@ const WorldCup = lazy(() => import('./pages/WorldCup'))
 const Model = lazy(() => import('./pages/Model'))
 const Value = lazy(() => import('./pages/Value'))
 const About = lazy(() => import('./pages/About'))
+const Pricing = lazy(() => import('./pages/Pricing'))
 
 function PageFallback() {
   return (
@@ -36,6 +37,7 @@ export default function App() {
         <Route path="/model" element={<Model />} />
         <Route path="/value" element={<Value />} />
         <Route path="/about" element={<About />} />
+        <Route path="/pricing" element={<Pricing />} />
       </Routes>
     </Suspense>
   )
