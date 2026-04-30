@@ -1,4 +1,5 @@
 @import './styles/tokens.css';
+@import './styles/pricing.css';
 
 html, body, #root { margin: 0; padding: 0; min-height: 100%; background: #020617; }
 body { font-family: 'Inter Tight', system-ui, sans-serif; color: #F8FAFC; }

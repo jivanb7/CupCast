@@ -1,0 +1,231 @@
+/* Pricing page styles
+ * --------------------
+ * Ported verbatim from design_handoff_cupcast/design_handoff_cupcast_price/
+ * pricing.html (Claude Design output, 2026-04-29). The .pr-* class set is
+ * the visual contract; the React component (pages/Pricing.jsx) renders the
+ * markup that consumes these classes.
+ *
+ * Why classes instead of inline styles like the rest of the app: this page
+ * leans on hover transitions, accordion animation, and an absolute-positioned
+ * cut-through badge — all easier to express with a stylesheet than React
+ * inline-style props.
+ */
+
+/* Card — used for each tier panel. Subtle hover lift + border accent. */
+.pr-card {
+  background: var(--cc-surface);
+  border: 1px solid var(--cc-line);
+  border-radius: 8px;
+  transition:
+    border-color 200ms cubic-bezier(.16, 1, .3, 1),
+    transform 200ms cubic-bezier(.16, 1, .3, 1);
+  position: relative;
+}
+.pr-card:hover {
+  transform: translateY(-1px);
+  border-color: var(--cc-line-strong);
+}
+.pr-card.pr-card--gold {
+  border-color: var(--cc-gold);
+}
+.pr-card.pr-card--gold:hover {
+  border-color: var(--cc-gold);
+}
+
+/* "Most chosen" eyebrow that visually CUTS through the top border of the
+   recommended card. Positioned -10px above the card edge with a background
+   matching the page so it appears to break the hairline. */
+.pr-most-chosen {
+  position: absolute;
+  top: -10px;
+  left: 24px;
+  background: var(--cc-bg);
+  padding: 0 10px;
+  font-family: var(--cc-mono);
+  font-size: 10px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--cc-gold);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.pr-most-chosen::before {
+  content: '◆';
+  font-size: 11px;
+}
+
+/* Feature bullet row inside each card. */
+.pr-feature-row {
+  display: grid;
+  grid-template-columns: 12px 1fr;
+  gap: 12px;
+  padding: 12px 0;
+  border-top: 1px solid var(--cc-line);
+  font-family: var(--cc-display);
+  font-size: 14px;
+  line-height: 1.45;
+  color: var(--cc-text);
+  align-items: start;
+}
+.pr-feature-row:first-child {
+  border-top: none;
+  padding-top: 0;
+}
+.pr-glyph {
+  font-family: var(--cc-mono);
+  font-size: 11px;
+  letter-spacing: 0;
+  color: var(--cc-muted);
+  margin-top: 3px;
+}
+.pr-glyph--gold { color: var(--cc-gold); }
+.pr-glyph--off { color: var(--cc-dim); }
+
+/* CTA buttons. Plain by default, gold-filled for the recommended tier. */
+.pr-cta {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+  padding: 14px 16px;
+  border-radius: 6px;
+  background: transparent;
+  border: 1px solid var(--cc-line-strong);
+  color: var(--cc-text);
+  font-family: var(--cc-display);
+  font-weight: 500;
+  font-size: 14px;
+  letter-spacing: -0.005em;
+  cursor: pointer;
+  text-decoration: none;
+  transition:
+    background 180ms cubic-bezier(.16, 1, .3, 1),
+    border-color 180ms cubic-bezier(.16, 1, .3, 1);
+}
+.pr-cta:hover { border-color: var(--cc-text); }
+.pr-cta--gold {
+  background: var(--cc-gold);
+  border-color: var(--cc-gold);
+  /* Dark navy text on gold reads in both day + night themes. */
+  color: #0E1223;
+}
+.pr-cta--gold:hover {
+  background: var(--cc-amber);
+  border-color: var(--cc-amber);
+}
+
+/* Monthly / Annual toggle pill. */
+.pr-toggle {
+  display: inline-flex;
+  border: 1px solid var(--cc-line-strong);
+  border-radius: 999px;
+  padding: 3px;
+  font-family: var(--cc-mono);
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+.pr-toggle button {
+  background: none;
+  border: 0;
+  color: var(--cc-muted);
+  padding: 6px 14px;
+  border-radius: 999px;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+}
+.pr-toggle button.is-on {
+  background: var(--cc-text);
+  color: var(--cc-bg);
+}
+
+/* Compare table. Hairline-only, no fills. */
+.pr-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: var(--cc-display);
+  font-size: 14px;
+}
+.pr-table th,
+.pr-table td {
+  padding: 16px 18px;
+  text-align: left;
+  border-top: 1px solid var(--cc-line);
+  vertical-align: middle;
+}
+.pr-table thead th { border-top: none; }
+.pr-table th.col-tier { text-align: center; }
+.pr-table td.cell-mark {
+  text-align: center;
+  font-family: var(--cc-mono);
+  font-size: 14px;
+}
+.pr-table .cell-mark.on { color: var(--cc-text); }
+.pr-table .cell-mark.off { color: var(--cc-dim); }
+.pr-table .cell-mark.gold { color: var(--cc-gold); }
+
+/* FAQ accordion. Rotating "+" → "×" with gold tint when open. */
+.pr-faq-item {
+  border-top: 1px solid var(--cc-line);
+}
+.pr-faq-q {
+  width: 100%;
+  background: none;
+  border: 0;
+  padding: 22px 0;
+  text-align: left;
+  color: var(--cc-text);
+  font-family: var(--cc-display);
+  font-weight: 500;
+  font-size: 18px;
+  letter-spacing: -0.01em;
+  cursor: pointer;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 24px;
+}
+.pr-faq-q .pr-faq-mark {
+  font-family: var(--cc-mono);
+  font-size: 14px;
+  color: var(--cc-muted);
+  transition:
+    transform 220ms cubic-bezier(.16, 1, .3, 1),
+    color 200ms;
+}
+.pr-faq-item.open .pr-faq-mark {
+  color: var(--cc-gold);
+  transform: rotate(45deg);
+}
+.pr-faq-a {
+  overflow: hidden;
+  max-height: 0;
+  transition:
+    max-height 320ms cubic-bezier(.16, 1, .3, 1),
+    padding 200ms;
+  font-family: var(--cc-serif);
+  font-style: italic;
+  font-size: 17px;
+  line-height: 1.55;
+  color: var(--cc-muted);
+}
+.pr-faq-item.open .pr-faq-a {
+  max-height: 240px;
+  padding: 0 0 22px;
+}
+
+/* Mobile */
+@media (max-width: 768px) {
+  .pr-page-padding { padding: 28px 22px 60px !important; }
+  .pr-cards-grid { grid-template-columns: 1fr !important; }
+  .pr-table-wrap { overflow-x: auto; }
+  .pr-table { min-width: 640px; }
+  .pr-hero h1 { font-size: clamp(40px, 11vw, 72px) !important; }
+  .pr-section-grid { grid-template-columns: 1fr !important; gap: 18px !important; }
+  .pr-numerals-grid { grid-template-columns: 1fr 1fr !important; }
+}

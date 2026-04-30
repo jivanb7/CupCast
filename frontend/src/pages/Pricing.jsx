@@ -1,12 +1,14 @@
-// Pricing — editorial three-tier layout matching the About / Match-detail
-// register: Fraunces serif italics for hero + tier names + price numerals,
-// Inter Tight body, JetBrains Mono eyebrows, hairlines (no shadows),
-// gold reserved for the recommended tier and price only. Copy lifted
-// from the brand brief drafted on 2026-04-29; no betting CTAs anywhere.
+// Pricing — three-tier page rendered against the visual contract Claude
+// Design produced in design_handoff_cupcast/design_handoff_cupcast_price/
+// pricing.html. The .pr-* class system (cut-through "MOST CHOSEN" badge,
+// hover lift on cards, rotating "+→×" FAQ marker, hairline-only table)
+// lives in src/styles/pricing.css; this file just renders the markup the
+// stylesheet expects.
 //
-// The CTAs link to /signup?tier=… placeholders so when auth + Stripe land
-// the entry points are already in the markup. Login tab in CCNav will
-// follow the same "coming soon" stub pattern when added.
+// Design Files only contained pricing.html + the unmodified cc-shared.css
+// + cc-ui.jsx — the corresponding pricing.jsx never finished generating
+// before the EndStreamResponse error killed it. This component fills that
+// gap; the visual outcome should match what Claude Design intended.
 
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
@@ -17,9 +19,7 @@ import SplitWords from '../components/cc/SplitWords'
 import useCCTheme from '../hooks/useCCTheme'
 import useClock from '../hooks/useClock'
 
-// Single source of truth for tier data. Same array drives the cards AND
-// the compare table — adding a feature in one place flows to both, no
-// silent drift between the two surfaces.
+// Tier data — single source of truth for the cards AND the compare table.
 const TIERS = [
   {
     key: 'matchday',
@@ -40,7 +40,7 @@ const TIERS = [
     key: 'season',
     name: 'Season Ticket',
     eyebrow: 'Most chosen',
-    price: { mo: 8, yr: 72 }, // 25% off annual
+    price: { mo: 8, yr: 72 }, // ≈25% off annual
     pitch: 'For the people who check every matchday.',
     bullets: [
       'Full slate — today + 7 days upcoming',
@@ -58,7 +58,7 @@ const TIERS = [
     key: 'directors',
     name: "Director's Box",
     eyebrow: 'Pro',
-    price: { mo: 22, yr: 192 }, // 27% off annual
+    price: { mo: 22, yr: 192 }, // ≈27% off annual
     pitch: 'For the people who keep score.',
     bullets: [
       'Everything in Season Ticket',
@@ -74,33 +74,32 @@ const TIERS = [
   },
 ]
 
-// Compare matrix — feature label + which tiers include it.
-// '◆' = gold marker on the recommended tier, '•' = plain bullet,
-// '—' = em-dash for "not included". Stored as the column-by-column
-// truth value so we can render the marker glyph based on tier semantics.
+// Compare matrix — feature row + boolean per tier.
+// Marker glyph rendered as • on plain tiers, ◆ on the recommended tier,
+// — on tiers that don't include the feature.
 const COMPARE_ROWS = [
-  ['Today’s slate',                              [true,  true,  true]],
-  ['Full 7-day upcoming view',                        [false, true,  true]],
-  ['Top-5 leagues',                                   [true,  true,  true]],
-  ['UCL + World Cup + MLS + Eredivisie + EFL',        [false, true,  true]],
-  ['Probability splits + reasoning bullets',          [true,  true,  true]],
-  ['Value picks with bookmaker edges',                [false, true,  true]],
-  ['Model accuracy dashboard',                        [false, true,  true]],
-  ['World Cup 2026 simulator',                        [false, true,  true]],
-  ['Match-detail (form, H2H, scorers, cards)',        [false, true,  true]],
-  ['Email + SMS value-pick alerts',                   [false, true,  true]],
-  ['Predictions published 24h earlier',               [false, false, true]],
-  ['Closing-line snapshot history',                   [false, false, true]],
-  ['Programmatic API access',                         [false, false, true]],
-  ['Custom alerts (any team, any edge)',              [false, false, true]],
-  ['Weekly model-insights newsletter',                [false, false, true]],
-  ['Priority Discord access',                         [false, false, true]],
+  ["Today’s slate",                                [true,  true,  true]],
+  ['Full 7-day upcoming view',                          [false, true,  true]],
+  ['Top-5 leagues',                                     [true,  true,  true]],
+  ['UCL + World Cup + MLS + Eredivisie + EFL',          [false, true,  true]],
+  ['Probability splits + reasoning bullets',            [true,  true,  true]],
+  ['Value picks with bookmaker edges',                  [false, true,  true]],
+  ['Model accuracy dashboard',                          [false, true,  true]],
+  ['World Cup 2026 simulator',                          [false, true,  true]],
+  ['Match-detail (form, H2H, scorers, cards)',          [false, true,  true]],
+  ['Email + SMS value-pick alerts',                     [false, true,  true]],
+  ['Predictions published 24h earlier',                 [false, false, true]],
+  ['Closing-line snapshot history',                     [false, false, true]],
+  ['Programmatic API access',                           [false, false, true]],
+  ['Custom alerts (any team, any edge)',                [false, false, true]],
+  ['Weekly model-insights newsletter',                  [false, false, true]],
+  ['Priority Discord access',                           [false, false, true]],
 ]
 
 const FAQ = [
   {
     q: 'When are predictions published before kickoff?',
-    a: 'Public predictions land 12 hours before kickoff. Director’s Box subscribers see them 24 hours earlier — 36 hours total ahead of the match. The earlier the publication, the closer the model’s call sits to the opening line, before the market has fully digested team news.',
+    a: "Public predictions land 12 hours before kickoff. Director’s Box subscribers see them 24 hours earlier — 36 hours total ahead of the match. The earlier the publication, the closer the model’s call sits to the opening line, before the market has fully digested team news.",
   },
   {
     q: 'Can I cancel anytime?',
@@ -112,11 +111,11 @@ const FAQ = [
   },
   {
     q: 'How calibrated are the probabilities, really?',
-    a: 'A 70% pick should land 70% of the time. We track Brier score and bucketed calibration weekly on the Model page — same numbers we use internally. Current season: 64.2% top-line accuracy at 0.018 calibration error. The page recomputes from the raw call history every refresh; nothing is a marketing screenshot.',
+    a: 'A 70% pick should land 70% of the time. We track Brier score and bucketed calibration weekly on the Model page — the same numbers we use internally. Current season: 64.2% top-line accuracy at 0.018 calibration error. The page recomputes from raw call history every refresh; nothing is a marketing screenshot.',
   },
   {
     q: 'Do I have to give a card to start?',
-    a: 'No. Matchday is free, no card, no email gate. Season Ticket and Director’s Box require a payment method only after a 7-day free trial.',
+    a: "No. Matchday is free — no card, no email gate. Season Ticket and Director’s Box require a payment method only after a 7-day free trial.",
   },
 ]
 
@@ -124,17 +123,40 @@ export default function Pricing() {
   const [theme, setTheme] = useCCTheme()
   const tick = useClock(13)
   const [billing, setBilling] = useState('mo') // 'mo' | 'yr'
+  const [openFAQ, setOpenFAQ] = useState(0)
 
   return (
-    <div className={`cc-root cc-${theme}`} style={{ position: 'relative', minHeight: '100vh', overflowX: 'hidden' }}>
+    <div
+      className={`cc-root cc-${theme}`}
+      style={{ position: 'relative', minHeight: '100vh', overflowX: 'hidden' }}
+    >
       <Aurora />
-      <div style={{ position: 'relative', zIndex: 2, padding: '40px 56px 80px' }}>
-        {/* Masthead — same pattern as About */}
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', paddingBottom: 14, borderBottom: '2px solid var(--cc-text)' }}>
+      <div
+        className="pr-page-padding"
+        style={{ position: 'relative', zIndex: 2, padding: '40px 56px 80px' }}
+      >
+        {/* Masthead — same pattern as About.jsx */}
+        <div
+          style={{
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: 'flex-end',
+            paddingBottom: 14,
+            borderBottom: '2px solid var(--cc-text)',
+          }}
+        >
           <div className="cc-rise" style={{ display: 'flex', alignItems: 'baseline', gap: 14 }}>
             <Link
               to="/"
-              style={{ fontFamily: 'var(--cc-serif)', fontStyle: 'italic', fontWeight: 700, fontSize: 30, letterSpacing: '-0.02em', color: 'var(--cc-text)', textDecoration: 'none' }}
+              style={{
+                fontFamily: 'var(--cc-serif)',
+                fontStyle: 'italic',
+                fontWeight: 700,
+                fontSize: 30,
+                letterSpacing: '-0.02em',
+                color: 'var(--cc-text)',
+                textDecoration: 'none',
+              }}
             >
               CupCast
             </Link>
@@ -147,7 +169,10 @@ export default function Pricing() {
         </div>
 
         {/* Hero */}
-        <section className="cc-rise" style={{ padding: '60px 0 40px', borderBottom: '1px solid var(--cc-line)' }}>
+        <section
+          className="cc-rise pr-hero"
+          style={{ padding: '60px 0 40px', borderBottom: '1px solid var(--cc-line)' }}
+        >
           <div className="cc-eyebrow">The Pitch</div>
           <h1
             className="serif"
@@ -162,7 +187,9 @@ export default function Pricing() {
               textWrap: 'balance',
             }}
           >
-            <SplitWords step={50} delay={120}>Pricing that earns its keep.</SplitWords>
+            <SplitWords step={50} delay={120}>
+              Pricing that earns its keep.
+            </SplitWords>
           </h1>
           <p
             style={{
@@ -176,23 +203,44 @@ export default function Pricing() {
               textWrap: 'pretty',
             }}
           >
-            A calibrated edge, priced for the people who actually use it. Pay monthly, pay yearly, or stay free — every tier ships with the same honest numbers and the same model.
+            A calibrated edge, priced for the people who actually use it. Pay monthly, pay
+            yearly, or stay free — every tier ships with the same honest numbers and the
+            same model.
           </p>
 
-          {/* Billing toggle */}
-          <div style={{ marginTop: 36, display: 'inline-flex', alignItems: 'center', gap: 10, padding: '6px 8px', border: '1px solid var(--cc-line-strong)', borderRadius: 999 }}>
-            <BillingPill active={billing === 'mo'} onClick={() => setBilling('mo')}>
+          {/* Monthly / Annual toggle */}
+          <div className="pr-toggle" style={{ marginTop: 36 }}>
+            <button
+              type="button"
+              className={billing === 'mo' ? 'is-on' : ''}
+              onClick={() => setBilling('mo')}
+            >
               Monthly
-            </BillingPill>
-            <BillingPill active={billing === 'yr'} onClick={() => setBilling('yr')}>
-              Annual <span style={{ marginLeft: 6, color: 'var(--cc-gold)' }}>— save 25–27%</span>
-            </BillingPill>
+            </button>
+            <button
+              type="button"
+              className={billing === 'yr' ? 'is-on' : ''}
+              onClick={() => setBilling('yr')}
+            >
+              Annual{' '}
+              <span style={{ marginLeft: 6, color: billing === 'yr' ? 'inherit' : 'var(--cc-gold)' }}>
+                — save 25–27%
+              </span>
+            </button>
           </div>
         </section>
 
         {/* ① Plans */}
         <SectionHeader number="①" label="Plans" />
-        <section style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 24, padding: '24px 0 50px' }}>
+        <section
+          className="pr-cards-grid"
+          style={{
+            display: 'grid',
+            gridTemplateColumns: 'repeat(3, 1fr)',
+            gap: 24,
+            padding: '24px 0 50px',
+          }}
+        >
           {TIERS.map((t) => (
             <TierCard key={t.key} tier={t} billing={billing} />
           ))}
@@ -200,14 +248,25 @@ export default function Pricing() {
 
         {/* ② Compare */}
         <SectionHeader number="②" label="Compare" />
-        <section style={{ padding: '24px 0 50px', borderBottom: '1px solid var(--cc-line)' }}>
+        <section
+          className="pr-table-wrap"
+          style={{ padding: '24px 0 50px', borderBottom: '1px solid var(--cc-line)' }}
+        >
           <CompareTable rows={COMPARE_ROWS} />
         </section>
 
         {/* ③ FAQ */}
         <SectionHeader number="③" label="Questions, asked and answered" />
-        <section style={{ padding: '24px 0 50px' }}>
-          <FAQList items={FAQ} />
+        <section style={{ padding: '24px 0 30px' }}>
+          {FAQ.map((it, i) => (
+            <FAQItem
+              key={i}
+              q={it.q}
+              a={it.a}
+              open={openFAQ === i}
+              onToggle={() => setOpenFAQ(openFAQ === i ? -1 : i)}
+            />
+          ))}
         </section>
 
         {/* Footer note */}
@@ -228,10 +287,14 @@ export default function Pricing() {
           }}
         >
           <span>
-            <span style={{ color: 'var(--cc-gold)' }}>◆ Founder pricing</span> — first 100 Season Ticket / Director’s Box subscribers lock in $5 / $15 forever.
+            <span style={{ color: 'var(--cc-gold)' }}>◆ Founder pricing</span> — first 100
+            Season Ticket / Director’s Box subscribers lock in $5 / $15 forever.
           </span>
           <span>
-            ← <Link to="/" style={{ color: 'inherit' }}>Back to Dashboard</Link>
+            ←{' '}
+            <Link to="/" style={{ color: 'inherit' }}>
+              Back to Dashboard
+            </Link>
           </span>
         </div>
       </div>
@@ -239,38 +302,29 @@ export default function Pricing() {
   )
 }
 
-// ── Subcomponents ─────────────────────────────────────────────────────
+// ── Section header ────────────────────────────────────────────────────
 
 function SectionHeader({ number, label }) {
   return (
-    <div className="cc-rise" style={{ display: 'flex', alignItems: 'center', gap: 14, paddingTop: 50, paddingBottom: 8, borderTop: '1px solid var(--cc-line-strong)' }}>
-      <span className="cc-eyebrow" style={{ color: 'var(--cc-gold)' }}>{number} {label}</span>
+    <div
+      className="cc-rise"
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: 14,
+        paddingTop: 50,
+        paddingBottom: 8,
+        borderTop: '1px solid var(--cc-line-strong)',
+      }}
+    >
+      <span className="cc-eyebrow" style={{ color: 'var(--cc-gold)' }}>
+        {number} {label}
+      </span>
     </div>
   )
 }
 
-function BillingPill({ active, children, onClick }) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      style={{
-        background: active ? 'var(--cc-text)' : 'transparent',
-        color: active ? 'var(--cc-bg)' : 'var(--cc-muted)',
-        border: 'none',
-        borderRadius: 999,
-        padding: '8px 16px',
-        cursor: 'pointer',
-        fontFamily: 'var(--cc-mono)',
-        fontSize: 11,
-        letterSpacing: '0.12em',
-        textTransform: 'uppercase',
-      }}
-    >
-      {children}
-    </button>
-  )
-}
+// ── Tier card ─────────────────────────────────────────────────────────
 
 function TierCard({ tier, billing }) {
   const price = billing === 'mo' ? tier.price.mo : tier.price.yr
@@ -280,18 +334,13 @@ function TierCard({ tier, billing }) {
 
   return (
     <div
-      style={{
-        border: recommended ? '1px solid var(--cc-gold)' : '1px solid var(--cc-line-strong)',
-        borderRadius: 12,
-        padding: '28px 26px 24px',
-        background: recommended ? 'var(--cc-surface-2)' : 'transparent',
-        position: 'relative',
-        display: 'flex',
-        flexDirection: 'column',
-      }}
+      className={`pr-card ${recommended ? 'pr-card--gold' : ''}`}
+      style={{ padding: '28px 26px 24px', display: 'flex', flexDirection: 'column' }}
     >
-      <div className="cc-eyebrow" style={{ color: recommended ? 'var(--cc-gold)' : 'var(--cc-muted)' }}>
-        {recommended ? '◆ ' : ''}{tier.eyebrow}
+      {recommended && <span className="pr-most-chosen">Most chosen</span>}
+
+      <div className="cc-eyebrow" style={{ color: 'var(--cc-muted)' }}>
+        {tier.eyebrow}
       </div>
 
       <h2
@@ -310,7 +359,17 @@ function TierCard({ tier, billing }) {
         {tier.name}
       </h2>
 
-      <p style={{ fontFamily: 'var(--cc-serif)', fontStyle: 'italic', fontSize: 17, lineHeight: 1.45, color: 'var(--cc-muted)', margin: '12px 0 0', textWrap: 'pretty' }}>
+      <p
+        style={{
+          fontFamily: 'var(--cc-serif)',
+          fontStyle: 'italic',
+          fontSize: 17,
+          lineHeight: 1.45,
+          color: 'var(--cc-muted)',
+          margin: '12px 0 0',
+          textWrap: 'pretty',
+        }}
+      >
         {tier.pitch}
       </p>
 
@@ -329,44 +388,48 @@ function TierCard({ tier, billing }) {
           {isFree ? 'Free' : `$${price}`}
         </span>
         {period && (
-          <span className="mono" style={{ fontSize: 12, color: 'var(--cc-muted)', letterSpacing: '0.1em', textTransform: 'uppercase' }}>
+          <span
+            className="mono"
+            style={{
+              fontSize: 12,
+              color: 'var(--cc-muted)',
+              letterSpacing: '0.1em',
+              textTransform: 'uppercase',
+            }}
+          >
             {period}
           </span>
         )}
       </div>
       {!isFree && billing === 'yr' && (
-        <div className="mono" style={{ fontSize: 10, color: 'var(--cc-dim)', letterSpacing: '0.1em', textTransform: 'uppercase' }}>
+        <div
+          className="mono"
+          style={{
+            fontSize: 10,
+            color: 'var(--cc-dim)',
+            letterSpacing: '0.1em',
+            textTransform: 'uppercase',
+          }}
+        >
           ≈ ${(tier.price.yr / 12).toFixed(2)}/mo, billed annually
         </div>
       )}
 
-      <ul style={{ listStyle: 'none', margin: '24px 0 0', padding: 0, display: 'grid', gap: 10, flex: 1 }}>
+      <div style={{ margin: '24px 0 0', flex: 1 }}>
         {tier.bullets.map((b, i) => (
-          <li key={i} style={{ display: 'flex', gap: 10, fontFamily: 'var(--cc-body)', fontSize: 14, lineHeight: 1.5, color: 'var(--cc-text)' }}>
-            <span aria-hidden style={{ color: recommended ? 'var(--cc-gold)' : 'var(--cc-muted)', flexShrink: 0 }}>{recommended ? '◆' : '•'}</span>
+          <div key={i} className="pr-feature-row">
+            <span className={`pr-glyph ${recommended ? 'pr-glyph--gold' : ''}`} aria-hidden>
+              {recommended ? '◆' : '•'}
+            </span>
             <span>{b}</span>
-          </li>
+          </div>
         ))}
-      </ul>
+      </div>
 
       <Link
         to={tier.cta.to}
-        style={{
-          marginTop: 28,
-          display: 'block',
-          textAlign: 'center',
-          padding: '14px 18px',
-          borderRadius: 999,
-          background: recommended ? 'var(--cc-gold)' : 'transparent',
-          color: recommended ? 'var(--cc-bg)' : 'var(--cc-text)',
-          border: recommended ? '1px solid var(--cc-gold)' : '1px solid var(--cc-line-strong)',
-          textDecoration: 'none',
-          fontFamily: 'var(--cc-mono)',
-          fontSize: 11,
-          letterSpacing: '0.14em',
-          textTransform: 'uppercase',
-          fontWeight: 600,
-        }}
+        className={`pr-cta ${recommended ? 'pr-cta--gold' : ''}`}
+        style={{ marginTop: 28 }}
       >
         {tier.cta.label}
       </Link>
@@ -374,121 +437,58 @@ function TierCard({ tier, billing }) {
   )
 }
 
+// ── Compare table ─────────────────────────────────────────────────────
+
 function CompareTable({ rows }) {
   return (
-    <div style={{ border: '1px solid var(--cc-line)', borderRadius: 8, overflow: 'hidden' }}>
-      {/* Header row */}
-      <div
-        style={{
-          display: 'grid',
-          gridTemplateColumns: '2fr 1fr 1fr 1fr',
-          alignItems: 'center',
-          padding: '14px 20px',
-          background: 'var(--cc-surface-2)',
-          borderBottom: '1px solid var(--cc-line-strong)',
-          fontFamily: 'var(--cc-mono)',
-          fontSize: 10,
-          letterSpacing: '0.14em',
-          textTransform: 'uppercase',
-          color: 'var(--cc-muted)',
-        }}
-      >
-        <span>Feature</span>
-        <span style={{ textAlign: 'center' }}>Matchday</span>
-        <span style={{ textAlign: 'center', color: 'var(--cc-gold)' }}>◆ Season Ticket</span>
-        <span style={{ textAlign: 'center' }}>Director’s Box</span>
-      </div>
-
-      {rows.map(([label, [m, s, d]], i) => (
-        <div
-          key={i}
-          style={{
-            display: 'grid',
-            gridTemplateColumns: '2fr 1fr 1fr 1fr',
-            alignItems: 'center',
-            padding: '12px 20px',
-            borderBottom: i < rows.length - 1 ? '1px solid var(--cc-line)' : 'none',
-            fontFamily: 'var(--cc-body)',
-            fontSize: 14,
-            color: 'var(--cc-text)',
-          }}
-        >
-          <span style={{ color: 'var(--cc-text)' }}>{label}</span>
-          <CompareCell included={m} recommended={false} />
-          <CompareCell included={s} recommended={true} />
-          <CompareCell included={d} recommended={false} />
-        </div>
-      ))}
-    </div>
+    <table className="pr-table">
+      <thead>
+        <tr>
+          <th>Feature</th>
+          <th className="col-tier">Matchday</th>
+          <th className="col-tier" style={{ color: 'var(--cc-gold)' }}>
+            ◆ Season Ticket
+          </th>
+          <th className="col-tier">Director&rsquo;s Box</th>
+        </tr>
+      </thead>
+      <tbody>
+        {rows.map(([label, [m, s, d]], i) => (
+          <tr key={i}>
+            <td>{label}</td>
+            <CompareCell included={m} recommended={false} />
+            <CompareCell included={s} recommended={true} />
+            <CompareCell included={d} recommended={false} />
+          </tr>
+        ))}
+      </tbody>
+    </table>
   )
 }
 
 function CompareCell({ included, recommended }) {
   if (!included) {
-    return (
-      <span style={{ textAlign: 'center', fontFamily: 'var(--cc-mono)', color: 'var(--cc-dim)' }}>—</span>
-    )
+    return <td className="cell-mark off">—</td>
   }
   return (
-    <span
-      style={{
-        textAlign: 'center',
-        fontFamily: 'var(--cc-mono)',
-        fontSize: 14,
-        color: recommended ? 'var(--cc-gold)' : 'var(--cc-text)',
-        fontWeight: recommended ? 600 : 400,
-      }}
-    >
+    <td className={`cell-mark ${recommended ? 'gold' : 'on'}`}>
       {recommended ? '◆' : '•'}
-    </span>
+    </td>
   )
 }
 
-function FAQList({ items }) {
-  const [openIdx, setOpenIdx] = useState(0)
+// ── FAQ accordion ─────────────────────────────────────────────────────
+
+function FAQItem({ q, a, open, onToggle }) {
   return (
-    <div style={{ border: '1px solid var(--cc-line)', borderRadius: 8, overflow: 'hidden' }}>
-      {items.map((it, i) => {
-        const open = openIdx === i
-        return (
-          <div
-            key={i}
-            style={{
-              borderBottom: i < items.length - 1 ? '1px solid var(--cc-line)' : 'none',
-            }}
-          >
-            <button
-              type="button"
-              onClick={() => setOpenIdx(open ? -1 : i)}
-              style={{
-                width: '100%',
-                background: 'transparent',
-                border: 'none',
-                padding: '18px 22px',
-                textAlign: 'left',
-                cursor: 'pointer',
-                display: 'flex',
-                justifyContent: 'space-between',
-                alignItems: 'baseline',
-                gap: 18,
-                color: 'var(--cc-text)',
-              }}
-            >
-              <span className="serif" style={{ fontStyle: 'italic', fontSize: 22, fontWeight: 600, letterSpacing: '-0.01em' }}>
-                {it.q}
-              </span>
-              <span className="mono" style={{ color: 'var(--cc-muted)', fontSize: 18 }}>
-                {open ? '–' : '+'}
-              </span>
-            </button>
-            {open && (
-              <div style={{ padding: '0 22px 22px', fontFamily: 'var(--cc-serif)', fontSize: 17, lineHeight: 1.55, color: 'var(--cc-muted)', maxWidth: 820, textWrap: 'pretty' }}>
-                {it.a}
-              </div>
-            )}
-          </div>
-        )
-      })}
+    <div className={`pr-faq-item ${open ? 'open' : ''}`}>
+      <button type="button" className="pr-faq-q" onClick={onToggle}>
+        <span>{q}</span>
+        <span className="pr-faq-mark" aria-hidden>
+          +
+        </span>
+      </button>
+      <div className="pr-faq-a">{a}</div>
     </div>
   )
 }
