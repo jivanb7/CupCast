@@ -47,9 +47,7 @@ export default function MatchDetail() {
             <MDForm m={m}/>
             <MDDivider label="④ Why we called it"/>
             <MDWhy m={m}/>
-            <MDDivider label="⑤ Key stats"/>
-            <MDStats m={m}/>
-            <MDDivider label="⑥ Goal scorers & cards"/>
+            <MDDivider label="⑤ Goal scorers & cards"/>
             <MDPlayerEvents m={m}/>
           </>
         )}
@@ -469,70 +467,6 @@ function MDWhy({ m }) {
             Reasoning library found no qualifying templates for this fixture — the model still has a call, just nothing surprising to say about it.
           </div>
         )}
-      </div>
-    </section>
-  );
-}
-
-// ── Stats ──────────────────────────────────────────────────────────────
-
-function MDStats({ m }) {
-  // Trimmed to the three signal stats most viewers actually care about.
-  // Goals doubles as a sanity-check next to the hero score; cards are the
-  // only other in-play numbers worth surfacing without xG / possession
-  // data we don't model.
-  const stats = [
-    { k: 'Goals', h: m.home_goals, a: m.away_goals, fmt: 'n0' },
-    { k: 'Yellow cards', h: m.home_yellow_cards, a: m.away_yellow_cards, fmt: 'n0' },
-    { k: 'Red cards', h: m.home_red_cards, a: m.away_red_cards, fmt: 'n0' },
-  ]
-  const hasAny = stats.some((s) => s.h != null || s.a != null)
-  if (!hasAny) {
-    return (
-      <section style={{maxWidth: 1080, margin:'0 auto', padding:'0 40px'}}>
-        <div style={{padding:'24px 0', fontFamily:'var(--cc-serif)', fontStyle:'italic', fontSize: 16, lineHeight: 1.5, color:'var(--cc-muted)', textAlign:'center', borderTop:'1px solid var(--cc-line)', borderBottom:'1px solid var(--cc-line)'}}>
-          In-play stats publish after the match completes.
-        </div>
-      </section>
-    )
-  }
-
-  const fmt = (v) => (v == null ? '—' : String(Math.round(Number(v))))
-  const better = (h, a) => {
-    if (h == null || a == null) return null
-    if (h > a) return 'h'
-    if (a > h) return 'a'
-    return null
-  }
-
-  return (
-    <section style={{maxWidth: 1080, margin:'0 auto', padding:'0 40px'}}>
-      <div style={{display:'grid', gridTemplateColumns:'repeat(3, 1fr)', gap: 0, border:'1px solid var(--cc-line)', borderRadius: 6}}>
-        {stats.map((s, i) => {
-          const b = better(s.h, s.a)
-          const hWeight = s.h != null ? Math.max(1, Number(s.h)) : 1
-          const aWeight = s.a != null ? Math.max(1, Number(s.a)) : 1
-          return (
-            <div key={i} style={{
-              padding:'18px 20px',
-              borderRight: i < stats.length - 1 ? '1px solid var(--cc-line)' : 'none',
-            }}>
-              <div className="cc-eyebrow">{s.k}</div>
-              <div style={{display:'flex', justifyContent:'space-between', alignItems:'baseline', marginTop: 10}}>
-                <span className="serif tnum" style={{fontSize: 24, fontStyle:'italic', fontWeight:600, color: b==='h' ? 'var(--cc-text)' : 'var(--cc-muted)'}}>{fmt(s.h)}</span>
-                <span className="mono" style={{fontSize: 9, color:'var(--cc-dim)', letterSpacing:'0.1em'}}>vs</span>
-                <span className="serif tnum" style={{fontSize: 24, fontStyle:'italic', fontWeight:600, color: b==='a' ? 'var(--cc-text)' : 'var(--cc-muted)'}}>{fmt(s.a)}</span>
-              </div>
-              <div style={{display:'flex', height: 2, marginTop: 8, background:'var(--cc-line)'}}>
-                <span style={{flex: hWeight, background: b==='h' ? 'var(--cc-gold)' : 'var(--cc-line-strong)'}}/>
-                <span style={{flex: aWeight, background: b==='a' ? 'var(--cc-gold)' : 'var(--cc-line-strong)'}}/>
-              </div>
-            </div>
-          )
-        })}
-      </div>
-      <div style={{marginTop: 12, fontFamily:'var(--cc-mono)', fontSize: 10, color:'var(--cc-dim)', letterSpacing:'0.08em', textTransform:'uppercase'}}>
-        ◆ Match-state stats only — model features (xG, possession, PPDA) aren't published.
       </div>
     </section>
   );
