@@ -1,4 +1,6 @@
 import { Link } from 'react-router-dom'
+import { useAuth } from '../../context/AuthContext'
+import ProfileMenu from './ProfileMenu'
 
 const items = [
   { k: 'Dashboard', to: '/' },
@@ -12,6 +14,8 @@ const items = [
 ]
 
 export default function CCNav({ active, theme, onTheme, compact }) {
+  const { isSignedIn } = useAuth()
+
   return (
     <nav
       style={{
@@ -38,6 +42,27 @@ export default function CCNav({ active, theme, onTheme, compact }) {
           {k}
         </Link>
       ))}
+
+      {/* Auth slot — replaces Sign-in link with the profile dropdown
+          once the demo flag is set. */}
+      {isSignedIn ? (
+        <ProfileMenu />
+      ) : (
+        <Link
+          to="/login"
+          style={{
+            color: 'var(--cc-text)',
+            textDecoration: 'none',
+            border: '1px solid var(--cc-line-strong)',
+            borderRadius: 999,
+            padding: '4px 12px',
+            marginLeft: 4,
+          }}
+        >
+          Sign in
+        </Link>
+      )}
+
       {onTheme && (
         <button
           type="button"

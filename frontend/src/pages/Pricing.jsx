@@ -11,13 +11,18 @@
 // gap; the visual outcome should match what Claude Design intended.
 
 import { useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import Aurora from '../components/cc/Aurora'
 import CCNav from '../components/cc/CCNav'
 import UpdatedBadge from '../components/cc/UpdatedBadge'
 import SplitWords from '../components/cc/SplitWords'
 import useCCTheme from '../hooks/useCCTheme'
 import useClock from '../hooks/useClock'
+import { useAuth } from '../context/AuthContext'
+
+// Tier ordering — used to decide whether a given card is the user's
+// current plan, an upgrade, or a downgrade.
+const TIER_ORDER = { matchday: 0, season: 1, directors: 2 }
 
 // Tier data — single source of truth for the cards AND the compare table.
 const TIERS = [
@@ -124,6 +129,9 @@ export default function Pricing() {
   const tick = useClock(13)
   const [billing, setBilling] = useState('mo') // 'mo' | 'yr'
   const [openFAQ, setOpenFAQ] = useState(0)
+  const { isSignedIn, user } = useAuth()
+  const navigate = useNavigate()
+  const currentTier = isSignedIn && user ? user.tier : null
 
   return (
     <div
@@ -242,7 +250,22 @@ export default function Pricing() {
           }}
         >
           {TIERS.map((t) => (
-            <TierCard key={t.key} tier={t} billing={billing} />
+            <TierCard
+              key={t.key}
+              tier={t}
+              billing={billing}
+              currentTier={currentTier}
+              onCtaClick={() => {
+                // Logged-out clicks on a paid tier route through /login;
+                // logged-in clicks fall through to whatever the per-tier
+                // cta.to route is (Manage subscription / Upgrade / etc.).
+                if (!isSignedIn && t.key !== 'matchday') {
+                  navigate('/login', { state: { from: { pathname: '/pricing' } } })
+                  return false
+                }
+                return true
+              }}
+            />
           ))}
         </section>
 
@@ -326,18 +349,75 @@ function SectionHeader({ number, label }) {
 
 // ── Tier card ─────────────────────────────────────────────────────────
 
-function TierCard({ tier, billing }) {
+function TierCard({ tier, billing, currentTier, onCtaClick }) {
   const price = billing === 'mo' ? tier.price.mo : tier.price.yr
   const isFree = price === 0
   const period = isFree ? null : billing === 'mo' ? '/mo' : '/yr'
   const recommended = tier.recommended
 
+  // Tier-aware overrides — collapses the "this card vs the user's current
+  // plan" relationship into one of four cases the rest of the JSX consumes.
+  const isCurrent = currentTier === tier.key
+  const isUpgrade =
+    currentTier && TIER_ORDER[tier.key] > TIER_ORDER[currentTier]
+  const isDowngrade =
+    currentTier && TIER_ORDER[tier.key] < TIER_ORDER[currentTier]
+
+  // Per-state CTA + eyebrow text. Current plan → Manage subscription;
+  // higher tier → Upgrade; lower tier → Downgrade. Logged-out users keep
+  // the default CTA (e.g. "Get Season Ticket"); the parent intercepts
+  // those clicks via onCtaClick to route through /login first.
+  let ctaLabel = tier.cta.label
+  let ctaTo = tier.cta.to
+  let ctaTone = recommended ? 'gold' : 'plain'
+  let badge = null
+  let highlightAsCurrent = false
+
+  if (isCurrent) {
+    ctaLabel = 'Manage subscription'
+    ctaTo = '/billing'
+    ctaTone = 'gold'
+    badge = 'Your plan'
+    highlightAsCurrent = true
+  } else if (isUpgrade) {
+    ctaLabel = `Upgrade to ${tier.name}`
+    ctaTone = recommended ? 'gold' : 'plain'
+  } else if (isDowngrade) {
+    ctaLabel = `Switch to ${tier.name}`
+    ctaTo = '/billing'
+    ctaTone = 'plain'
+  }
+
+  // The "Most chosen" cut-through badge is replaced with "Your plan" when
+  // the user is signed in on this tier; otherwise it shows on whichever
+  // tier was originally flagged as recommended.
+  const showCurrentBadge = !!badge
+  const showRecommendedBadge = recommended && !badge
+
+  // Style: a tier the user owns gets the gold border whether or not it
+  // was the originally-recommended one. Without this, signing in as a
+  // Director's Box user would leave Season Ticket gold-bordered while
+  // the actual current plan looked secondary.
+  const goldBorder = recommended || highlightAsCurrent
+
+  function handleCtaClick(e) {
+    if (onCtaClick) {
+      const proceed = onCtaClick(e)
+      if (proceed === false) {
+        e.preventDefault()
+      }
+    }
+  }
+
   return (
     <div
-      className={`pr-card ${recommended ? 'pr-card--gold' : ''}`}
+      className={`pr-card ${goldBorder ? 'pr-card--gold' : ''}`}
       style={{ padding: '28px 26px 24px', display: 'flex', flexDirection: 'column' }}
     >
-      {recommended && <span className="pr-most-chosen">Most chosen</span>}
+      {showCurrentBadge && (
+        <span className="pr-most-chosen">{badge}</span>
+      )}
+      {showRecommendedBadge && <span className="pr-most-chosen">Most chosen</span>}
 
       <div className="cc-eyebrow" style={{ color: 'var(--cc-muted)' }}>
         {tier.eyebrow}
@@ -427,11 +507,12 @@ function TierCard({ tier, billing }) {
       </div>
 
       <Link
-        to={tier.cta.to}
-        className={`pr-cta ${recommended ? 'pr-cta--gold' : ''}`}
+        to={ctaTo}
+        onClick={handleCtaClick}
+        className={`pr-cta ${ctaTone === 'gold' ? 'pr-cta--gold' : ''}`}
         style={{ marginTop: 28 }}
       >
-        {tier.cta.label}
+        {ctaLabel}
       </Link>
     </div>
   )
