@@ -1,0 +1,53 @@
+# Automated data and model tests.
+#
+# Runs the dedicated suites under ml/tests/test_automated_data.py and
+# ml/tests/test_automated_model.py.
+#
+# Triggers:
+#   - On every push to any branch (catch regressions before merge)
+#   - On a daily schedule (drift safety net)
+#   - On manual dispatch (debugging)
+#
+# These tests are self-contained: they build synthetic fixtures and
+# train a small in-test XGBoost model, so they need no secrets,
+# no database, and no MLflow access. Safe to run anywhere.
+
+name: Data & Model Tests
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Daily at 12:00 UTC. UTC-only, not DST-aware; this is fine.
+    - cron: "0 12 * * *"
+  workflow_dispatch:
+
+jobs:
+  data-and-model-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install ML dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r ml/requirements.txt pytest
+
+      - name: Run automated data tests
+        run: pytest ml/tests/test_automated_data.py -v --tb=short
+        env:
+          PYTHONPATH: .
+
+      - name: Run automated model tests
+        run: pytest ml/tests/test_automated_model.py -v --tb=short
+        env:
+          PYTHONPATH: .

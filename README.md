@@ -4,7 +4,7 @@
 
 CupCast forecasts the outcome of upcoming matches across ten football leagues, surfaces value picks where our model has high conviction, and tracks our live accuracy on a public model performance page so anyone can audit how the model is actually doing.
 
-🌐 **Live demo:** [https://cupcast.app](https://cupcast-frontend-dlotj2g4dq-uw.a.run.app/login)
+🌐 **Live demo:** [https://cupcast-frontend-dlotj2g4dq-uw.a.run.app](https://cupcast-frontend-dlotj2g4dq-uw.a.run.app/login)
 
 ## 🎬 Demo
 
