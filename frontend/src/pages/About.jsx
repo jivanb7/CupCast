@@ -53,10 +53,10 @@ export default function About() {
 
         {/* Numerals strip */}
         <section style={{display:'grid', gridTemplateColumns:'repeat(4, 1fr)', borderBottom:'1px solid var(--cc-line)'}}>
-          <NumeralStrip eyebrow="Matches modelled" big="142,889" sub="2018-2026 · 7 seasons · 9 leagues"/>
-          <NumeralStrip eyebrow="Season accuracy" big="64.2%" sub="+2.1% vs market baseline" gold/>
-          <NumeralStrip eyebrow="Calibration error" big="0.018" sub="Brier 0.182 · log-loss 0.541"/>
-          <NumeralStrip eyebrow="Years live" big="04" sub="Since the 2022 World Cup" last/>
+          <NumeralStrip eyebrow="Matches modelled" big="65,000" sub="10 leagues · two decades of football"/>
+          <NumeralStrip eyebrow="Season accuracy" big="43%" sub="Live, audit-able on the Model page" gold/>
+          <NumeralStrip eyebrow="Log loss" big="1.00" sub="Validation, three-way prediction"/>
+          <NumeralStrip eyebrow="Production model" big="v0.4.0" sub="XGBoost · calibrated · trained Apr 2026" last/>
         </section>
 
         {/* Principles */}
@@ -68,7 +68,7 @@ export default function About() {
                 ['01','Numbers earn trust by being checkable.','Every prediction we publish is logged with a timestamp. Every claim of accuracy is recomputable from raw call history. The Model page exposes the live numbers, not a marketing screenshot from last quarter.'],
                 ['02','Calibration over confidence.','A 70% pick should land 70% of the time, not 80% with a strong narrative. We measure calibration weekly and refit when buckets drift more than a percentage point — even when accuracy looks fine.'],
                 ['03','Reasoning is the product, not a tooltip.','Three to five plain-English bullets per match — the same ones our analysts use to interrogate the model. If the bullets do not stand up to read-aloud, the call gets pulled.'],
-                ['04','We say "we do not know" out loud.','Leagues with thin data ship as CALIBRATING, not as fake-confident numbers. The Liga MX prediction layer was dark for 14 weeks last season. Honest beats present.'],
+                ['04','We say "we do not know" out loud.','Leagues with thin data are surfaced as CALIBRATING rather than dressed up as confident calls. When the model does not have real signal, we hold the prediction. Honest beats present.'],
                 ['05','No betting CTAs. Ever.','We will not place a wager for you, route you to a sportsbook, or take a referral cut. Numbers are the hero — what you do with them is your business.'],
               ].map(([n, t, b], i) => (
                 <li key={i} style={{display:'grid', gridTemplateColumns:'80px 1fr', gap: 24, paddingBottom: 30, borderBottom: i<4 ? '1px solid var(--cc-line)' : 'none'}}>
@@ -89,12 +89,12 @@ export default function About() {
             <div className="cc-eyebrow">The Method</div>
             <div>
               <h2 className="serif" style={{fontSize: 56, fontStyle:'italic', fontWeight: 600, letterSpacing:'-0.03em', lineHeight: 1, margin: 0, textWrap:'balance', maxWidth: 780}}>
-                A small ensemble, fitted weekly, audited daily.
+                One model, retrained weekly, audited in public.
               </h2>
               <div style={{display:'grid', gridTemplateColumns:'repeat(3, 1fr)', gap: 24, marginTop: 32}}>
-                <MethodCard t="Inputs" lines={['Team xG · xGA · 38wk decay','Squad availability · injury minutes','Travel km · rest days','Venue · referee · pitch class','Weather · pressure · wind']}/>
-                <MethodCard t="Models" lines={['Hierarchical Poisson · base rate','Gradient-boosted residuals','Bayesian draw inflator','Live-state RNN · 90 minute updates','Market disagreement weighting']}/>
-                <MethodCard t="Audit" lines={['Calibration plot · daily','Decile drift · weekly','Per-league refit · monthly','Backtest on 1958-2022 · seasonal','Rejection log · on every miss']}/>
+                <MethodCard t="Inputs" lines={['Elo and pi-ratings · team strength','Recent form · 5 and 10 match windows','Head-to-head · last 5 meetings','Match stats · shots, corners, cards','Injuries and player availability','Rest days and fixture congestion']}/>
+                <MethodCard t="Models" lines={['XGBoost classifier · 87 features','Isotonic calibration · 3-fold CV','Optuna hyperparameter search','Recency-weighted · 3-year half-life','Champion challenger promotion gate']}/>
+                <MethodCard t="Audit" lines={['Time-aware chronological validation','Promotion gate · log loss and accuracy','MLflow tracking · every run logged','Weekly retrain · automated CI/CD','Live performance page · public audit']}/>
               </div>
             </div>
           </div>
@@ -132,16 +132,16 @@ export default function About() {
             letterSpacing:'-0.02em', lineHeight: 1.15, color:'var(--cc-text)',
             maxWidth: 1100, margin:'0 auto', textWrap:'balance',
           }}>
-            <span style={{color:'var(--cc-gold)'}}>"</span> If the model has nothing useful to say, it will say nothing. The hardest line we hold is the line at which a confident-looking number has not earned its confidence yet. <span style={{color:'var(--cc-gold)'}}>"</span>
+            <span style={{color:'var(--cc-gold)'}}>"</span> A 70% pick should win 70% of the time. Anything else is just confidence in a costume. <span style={{color:'var(--cc-gold)'}}>"</span>
           </div>
           <div style={{marginTop: 24, fontFamily:'var(--cc-mono)', fontSize: 11, color:'var(--cc-muted)', letterSpacing:'0.16em'}}>
-            — Claude Code · 2026
+            — The CupCast Desk
           </div>
         </section>
 
         <footer style={{marginTop: 30, paddingTop: 14, borderTop:'1px solid var(--cc-line-strong)', display:'flex', justifyContent:'space-between', fontFamily:'var(--cc-mono)', fontSize: 10, color:'var(--cc-muted)', letterSpacing:'0.1em', textTransform:'uppercase'}}>
           <span>← <Link to="/" style={{color:'inherit'}}>Back to Dashboard</Link></span>
-          <span>About · Set in Fraunces, General Sans, Inter Tight, JetBrains Mono</span>
+          <span>About</span>
         </footer>
       </div>
     </div>

@@ -116,7 +116,7 @@ const FAQ = [
   },
   {
     q: 'How calibrated are the probabilities, really?',
-    a: 'A 70% pick should land 70% of the time. We track Brier score and bucketed calibration weekly on the Model page — the same numbers we use internally. Current season: 64.2% top-line accuracy at 0.018 calibration error. The page recomputes from raw call history every refresh; nothing is a marketing screenshot.',
+    a: 'A 70% pick should land 70% of the time. We track Brier score and bucketed calibration on the Model page — the same numbers we use internally. The page recomputes from live call history on every refresh; nothing is a marketing screenshot.',
   },
   {
     q: 'Do I have to give a card to start?',
