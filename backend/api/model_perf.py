@@ -56,9 +56,10 @@ def get_model_performance(db: Session = Depends(get_db)):
     correct = sum(1 for p, _ in evaluated_preds if p.was_correct)
     overall_accuracy = round(correct / total, 4) if total > 0 else 0.0
 
-    # Compute F1 macro and log-loss live from production predictions
+    # Compute F1 macro, log-loss, and Brier score live from production predictions
     f1_macro = 0.0
     log_loss_val = 0.0
+    brier_score = 0.0
     if total > 0:
         import math
         # Build actual vs predicted lists for F1 macro
@@ -83,16 +84,26 @@ def get_model_performance(db: Session = Depends(get_db)):
                 f1_scores.append(f1)
             f1_macro = round(sum(f1_scores) / len(f1_scores), 4)
 
-            # Log-loss: -1/N * sum(log(predicted probability of actual outcome))
+            # Log-loss + multi-class Brier — single pass over evaluated predictions.
+            # Brier (3-class) = mean over i of sum_c (p_ic - 1{a_i==c})^2.
+            # Range 0 (perfect) to 2 (worst); ~0.667 = random 1/3-each baseline.
             eps = 1e-15
             log_loss_sum = 0.0
+            brier_sum = 0.0
+            brier_n = 0
             for pred, match in evaluated_preds:
                 if not match.result:
                     continue
                 prob_map = {"H": pred.prob_home_win, "D": pred.prob_draw, "A": pred.prob_away_win}
                 prob_actual = max(min(prob_map.get(match.result, 1 / 3), 1 - eps), eps)
                 log_loss_sum -= math.log(prob_actual)
+                brier_sum += sum(
+                    (prob_map[c] - (1.0 if match.result == c else 0.0)) ** 2
+                    for c in ("H", "D", "A")
+                )
+                brier_n += 1
             log_loss_val = round(log_loss_sum / len(actuals), 4)
+            brier_score = round(brier_sum / brier_n, 4) if brier_n else 0.0
 
     # Accuracy by league
     league_stats: dict[str, dict] = {}
@@ -232,6 +243,7 @@ def get_model_performance(db: Session = Depends(get_db)):
         overall_accuracy=overall_accuracy,
         overall_f1_macro=f1_macro,
         overall_log_loss=log_loss_val,
+        overall_brier_score=brier_score,
         accuracy_by_league=accuracy_by_league,
         accuracy_by_league_window=accuracy_by_league_window,
         accuracy_by_date=accuracy_by_date,

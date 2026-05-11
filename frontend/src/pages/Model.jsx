@@ -1,7 +1,7 @@
 // Model Performance — Direction B (Bloomberg terminal)
 // Wired to live backend (`useModelPerformance`, `useRecentMatches`).
 // Panels the backend doesn't expose (calibration, confusion, deciles,
-// market/naive/random comparisons, ROI, Brier) fall back to honest
+// market/naive/random comparisons, ROI) fall back to honest
 // "metric not exposed" / `emptyState('calibrating')` copy rather than
 // fabricating numbers.
 
@@ -43,7 +43,7 @@ export default function Model() {
         {/* Hero accuracy strip */}
         <section style={{display:'grid', gridTemplateColumns:'1.4fr 1fr 1fr 1fr', borderBottom:'1px solid var(--cc-line-strong)'}}>
           <HeroAccuracy data={data} loading={loading} fatal={fatal}/>
-          <PanelStat label="Brier score" v={DASH} sub="metric not exposed yet"/>
+          <PanelStat label="Brier score" v={fatal || !data || data.brierScore == null ? DASH : data.brierScore.toFixed(3)} sub={fatal ? 'feed unavailable' : 'lower is better · 0.667 random'}/>
           <PanelStat label="Log loss" v={fatal || !data ? DASH : data.logLoss.toFixed(3)} sub={fatal ? 'feed unavailable' : 'lower is better'}/>
           <PanelStat label="ROI · value picks" v={DASH} sub="metric not exposed yet" gold/>
         </section>

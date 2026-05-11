@@ -80,6 +80,7 @@ class ModelPerformanceResponse(BaseModel):
     overall_accuracy: float
     overall_f1_macro: float
     overall_log_loss: float
+    overall_brier_score: float
     accuracy_by_league: dict[str, float]
     accuracy_by_league_window: dict[str, LeagueWindowDelta] = {}
     accuracy_by_date: list[DailyAccuracy] = []

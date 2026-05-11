@@ -231,6 +231,7 @@ export function adaptModelPerformance(api) {
     rolling90: +overallAcc.toFixed(1),
     f1Macro: +(Number(api.overall_f1_macro ?? 0)).toFixed(3),
     logLoss: +(Number(api.overall_log_loss ?? 0)).toFixed(3),
+    brierScore: api.overall_brier_score != null ? +(Number(api.overall_brier_score)).toFixed(3) : null,
     lastWeek,
     perLeague,
     baselines,
