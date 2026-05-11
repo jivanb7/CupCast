@@ -43,7 +43,7 @@ export default function Model() {
         {/* Hero accuracy strip */}
         <section style={{display:'grid', gridTemplateColumns:'1.4fr 1fr 1fr 1fr', borderBottom:'1px solid var(--cc-line-strong)'}}>
           <HeroAccuracy data={data} loading={loading} fatal={fatal}/>
-          <PanelStat label="Brier score" v={fatal || !data || data.brierScore == null ? DASH : data.brierScore.toFixed(3)} sub={fatal ? 'feed unavailable' : 'lower is better · 0.667 random'}/>
+          <PanelStat label="Brier score" v={fatal || !data || data.brierScore == null ? DASH : data.brierScore.toFixed(3)} sub={fatal ? 'feed unavailable' : 'how close our odds are to reality'}/>
           <PanelStat label="Log loss" v={fatal || !data ? DASH : data.logLoss.toFixed(3)} sub={fatal ? 'feed unavailable' : 'lower is better'}/>
           <PanelStat label="ROI · value picks" v={DASH} sub="metric not exposed yet" gold/>
         </section>
