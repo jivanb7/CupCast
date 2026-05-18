@@ -41,7 +41,7 @@ const RAIL = [
 export default function Matches() {
   const [theme, setTheme] = useCCTheme()
   const tick = useClock(7)
-  const [tab, setTab] = useState('TODAY')
+  const [tab, setTab] = useState('UPCOMING')
   const [leagueCode, setLeagueCode] = useState('ALL')
 
   const upcoming = useUpcomingMatches({ daysAhead: 14 })
